@@ -1,80 +1,69 @@
-import os
-import sys
-import yaml
+import copy
+import pickle
 import random
 import resource
+import time
+import traceback
 from collections import defaultdict
-import copy
+
 import numpy as np
 import torch
-import torch.nn as nn
-from tqdm import tqdm
-import pickle
 import wandb
-import traceback
-import time
+from torch import nn
+from torch_geometric.data import HeteroData
+from torch_geometric.loader import DataLoader
+from tqdm import tqdm
 
 from args import parse_args
-from data import load_data, get_data,BindingDataset
-from model import load_model, to_cuda
-from utils import printt, print_res, log, get_unixtime
-from train import train, evaluate, evaluate_pose
+from data import BindingDataset, get_data, load_data
+from evaluation.compute_rmsd import evaluate_all_rmsds
 from filtering.dataset import get_confidence_loader
-from torch_geometric.loader import DataLoader
-from torch_geometric.data import HeteroData
 from geom_utils import set_time
+from model import load_model, to_cuda
+
 # from helpers import WandbLogger, TensorboardLogger
 from sample import sample
-from evaluation.compute_rmsd import evaluate_all_rmsds
+from seed import set_seed
+from train import evaluate, evaluate_pose, train
+from utils import get_unixtime, log, print_res, printt
 
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-
-def evaluate_confidence(model,loader,args):
-    
+def evaluate_confidence(model: nn.Module, loader: DataLoader, args):
     all_confidences = []
-    all_confidences_with_name ={}
-    
+    all_confidences_with_name = {}
 
     model.eval()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     all_labels = []
     all_pred = []
     all_loss = []
-    print("loader len: ",len(loader))
+    print("loader len: ", len(loader))
     for data in tqdm(loader, total=len(loader)):
-        #data, rmsd = batch
+        # data, rmsd = batch
         # move to CUDA
 
-        
         if args.num_gpu == 1 and torch.cuda.is_available():
             data = data.cuda()
             set_time(data, 0, 0, 0, batch_size=args.batch_size, device=device)
         try:
             with torch.no_grad():
                 pred = model(data)
-            #print("prediction",pred)
+            # print("prediction",pred)
             all_pred.append(pred.detach().cpu())
 
-        except RuntimeError as e:
-            if 'out of memory' in str(e):
-                print('| WARNING: ran out of memory, skipping batch')
+        except RuntimeError as err:
+            if "out of memory" in str(err):
+                print("| WARNING: ran out of memory, skipping batch")
                 for p in model.parameters():
                     if p.grad is not None:
                         del p.grad  # free some memory
                 torch.cuda.empty_cache()
                 continue
-            else:
-                raise e
+            raise err
 
-    all_pred = torch.cat(all_pred).tolist() # TODO -> maybe list inside
-
+    all_pred = torch.cat(all_pred).tolist()  # TODO -> maybe list inside
 
     return all_pred
 
@@ -101,30 +90,29 @@ def main(args=None):
     if args.num_workers >= 1:
         torch.multiprocessing.set_sharing_strategy("file_system")
 
-    
     # test mode: load up all replicates from checkpoint directory
     # and evaluate by sampling from reverse diffusion process
     if args.mode == "test":
         set_seed(args.seed)
         printt("running inference")
         test_scores = defaultdict(list)
-    
+
         fold = 0
         # load and convert data to DataLoaders
         loaders = get_data(data, fold, args, for_reverse_diffusion=True)
         # print(loaders["test"].data)
-        
+
         printt("finished creating data splits")
         # get model and load checkpoint, if relevant
         model = load_model(args, data_params, fold)
         model = to_cuda(model, args)
 
-        model_confidence = load_model(args, data_params, fold,confidence_mode=True)
+        model_confidence = load_model(args, data_params, fold, confidence_mode=True)
         model_confidence = to_cuda(model_confidence, args)
         printt("finished loading model")
 
-
         if args.wandb_sweep:
+
             def try_params():
                 run = wandb.init()
                 args.temp_sampling = wandb.config.temp_sampling
@@ -132,8 +120,10 @@ def main(args=None):
                 args.temp_sigma_data_tr = wandb.config.temp_sigma_data_tr
                 args.temp_sigma_data_rot = wandb.config.temp_sigma_data_rot
 
-                print(f'running run with: {args.temp_sampling, args.temp_psi, args.temp_sigma_data_tr, args.temp_sigma_data_rot}')
-                printt('Running sequentially without confidence model')
+                print(
+                    f"running run with: {args.temp_sampling, args.temp_psi, args.temp_sigma_data_tr, args.temp_sigma_data_rot}"
+                )
+                printt("Running sequentially without confidence model")
                 complex_rmsd_lt5 = []
                 complex_rmsd_lt2 = []
                 for i in tqdm(range(5)):
@@ -145,18 +135,24 @@ def main(args=None):
                         raise e
 
                     meter = evaluate_all_rmsds(loaders["val"], samples_list)
-                    ligand_rmsd_summarized, complex_rmsd_summarized, interface_rmsd_summarized = meter.summarize(verbose=False)
-                    complex_rmsd_lt5.append(complex_rmsd_summarized['lt5'])
-                    complex_rmsd_lt2.append(complex_rmsd_summarized['lt2'])
-                    printt(f'Finished {i}-th sweep over the data')
+                    (
+                        ligand_rmsd_summarized,
+                        complex_rmsd_summarized,
+                        interface_rmsd_summarized,
+                    ) = meter.summarize(verbose=False)
+                    complex_rmsd_lt5.append(complex_rmsd_summarized["lt5"])
+                    complex_rmsd_lt2.append(complex_rmsd_summarized["lt2"])
+                    printt(f"Finished {i}-th sweep over the data")
                 complex_rmsd_lt5 = np.array(complex_rmsd_lt5)
                 complex_rmsd_lt2 = np.array(complex_rmsd_lt2)
-                print(f'Average CRMSD < 5: {complex_rmsd_lt5.mean()}')
-                print(f'Average CRMSD < 2: {complex_rmsd_lt2.mean()}')
-                wandb.log({
-                    'complex_rmsd_lt5': complex_rmsd_lt5.mean(),
-                    'complex_rmsd_lt2': complex_rmsd_lt2.mean()
-                })
+                print(f"Average CRMSD < 5: {complex_rmsd_lt5.mean()}")
+                print(f"Average CRMSD < 2: {complex_rmsd_lt2.mean()}")
+                wandb.log(
+                    {
+                        "complex_rmsd_lt5": complex_rmsd_lt5.mean(),
+                        "complex_rmsd_lt2": complex_rmsd_lt2.mean(),
+                    }
+                )
 
             def try_params_with_confidence_model():
                 wandb_key = "INSERT_YOUR_WANDB_KEY"
@@ -167,38 +163,58 @@ def main(args=None):
                 args.temp_sigma_data_tr = wandb.config.temp_sigma_data_tr
                 args.temp_sigma_data_rot = wandb.config.temp_sigma_data_rot
 
-                print(f'running run with confidence model with: {args.temp_sampling, args.temp_psi, args.temp_sigma_data_tr, args.temp_sigma_data_rot}')
+                print(
+                    f"running run with confidence model with: {args.temp_sampling, args.temp_psi, args.temp_sigma_data_tr, args.temp_sigma_data_rot}"
+                )
 
                 args.num_samples = 5
 
                 # run reverse diffusion process
                 try:
-                    loaders_repeated,results = generate_loaders(loaders["val"],args) #TODO adapt sample size
-                    
-                    for i,loader in tqdm(enumerate(loaders_repeated), total=len(loaders_repeated)):
-                        samples_list = sample(loader, model, args) #TODO: should work on data loader
-                        samples_loader = DataLoader(samples_list,batch_size=args.batch_size)
-                        pred_list = evaluate_confidence(model_confidence,samples_loader,args) # TODO -> maybe list inside
-                        results[i]= results[i]+sorted(list(zip(samples_list,pred_list)),key=lambda x:-x[1]) 
-                        printt("Finished Complex!")          
+                    loaders_repeated, results = generate_loaders(
+                        loaders["val"], args
+                    )  # TODO adapt sample size
+
+                    for i, loader in tqdm(
+                        enumerate(loaders_repeated), total=len(loaders_repeated)
+                    ):
+                        samples_list = sample(
+                            loader, model, args
+                        )  # TODO: should work on data loader
+                        samples_loader = DataLoader(
+                            samples_list, batch_size=args.batch_size
+                        )
+                        pred_list = evaluate_confidence(
+                            model_confidence, samples_loader, args
+                        )  # TODO -> maybe list inside
+                        results[i] = results[i] + sorted(
+                            list(zip(samples_list, pred_list)), key=lambda x: -x[1]
+                        )
+                        printt("Finished Complex!")
                 except Exception as e:
                     print(e)
                     print(traceback.format_exc())
                     raise e
 
-                printt(f'Finished run {args.run_name}')
+                printt(f"Finished run {args.run_name}")
 
                 meter = evaluate_all_predictions(results)
-                ligand_rmsd_summarized, complex_rmsd_summarized, interface_rmsd_summarized = meter.summarize(verbose=False)
-                complex_rmsd_lt5 = complex_rmsd_summarized['lt5']
-                complex_rmsd_lt2 = complex_rmsd_summarized['lt2']
+                (
+                    ligand_rmsd_summarized,
+                    complex_rmsd_summarized,
+                    interface_rmsd_summarized,
+                ) = meter.summarize(verbose=False)
+                complex_rmsd_lt5 = complex_rmsd_summarized["lt5"]
+                complex_rmsd_lt2 = complex_rmsd_summarized["lt2"]
 
-                print(f'Average CRMSD < 5: {complex_rmsd_lt5}')
-                print(f'Average CRMSD < 2: {complex_rmsd_lt2}')
-                wandb.log({
-                    'complex_rmsd_lt5': complex_rmsd_lt5,
-                    'complex_rmsd_lt2': complex_rmsd_lt2
-                })
+                print(f"Average CRMSD < 5: {complex_rmsd_lt5}")
+                print(f"Average CRMSD < 2: {complex_rmsd_lt2}")
+                wandb.log(
+                    {
+                        "complex_rmsd_lt5": complex_rmsd_lt5,
+                        "complex_rmsd_lt2": complex_rmsd_lt2,
+                    }
+                )
 
             def try_actual_steps_with_confidence_model():
                 wandb_key = "INSERT_YOUR_WANDB_KEY"
@@ -206,69 +222,88 @@ def main(args=None):
                 run = wandb.init()
                 args.actual_steps = wandb.config.actual_steps
 
-                print(f'Running with actual steps: {args.actual_steps}')
+                print(f"Running with actual steps: {args.actual_steps}")
 
                 args.num_samples = 10
 
                 # run reverse diffusion process
                 try:
-                    loaders_repeated,results = generate_loaders(loaders["val"],args) #TODO adapt sample size
-                    
-                    for i,loader in tqdm(enumerate(loaders_repeated), total=len(loaders_repeated)):
-                        samples_list = sample(loader, model, args) #TODO: should work on data loader
-                        samples_loader = DataLoader(samples_list,batch_size=args.batch_size)
-                        pred_list = evaluate_confidence(model_confidence,samples_loader,args) # TODO -> maybe list inside
-                        results[i]= results[i]+sorted(list(zip(samples_list,pred_list)),key=lambda x:-x[1]) 
-                        printt("Finished Complex!")          
+                    loaders_repeated, results = generate_loaders(
+                        loaders["val"], args
+                    )  # TODO adapt sample size
+
+                    for i, loader in tqdm(
+                        enumerate(loaders_repeated), total=len(loaders_repeated)
+                    ):
+                        samples_list = sample(
+                            loader, model, args
+                        )  # TODO: should work on data loader
+                        samples_loader = DataLoader(
+                            samples_list, batch_size=args.batch_size
+                        )
+                        pred_list = evaluate_confidence(
+                            model_confidence, samples_loader, args
+                        )  # TODO -> maybe list inside
+                        results[i] = results[i] + sorted(
+                            list(zip(samples_list, pred_list)), key=lambda x: -x[1]
+                        )
+                        printt("Finished Complex!")
                 except Exception as e:
                     print(e)
                     print(traceback.format_exc())
                     raise e
 
-                printt(f'Finished run {args.run_name}')
+                printt(f"Finished run {args.run_name}")
 
                 meter = evaluate_all_predictions(results)
-                ligand_rmsd_summarized, complex_rmsd_summarized, interface_rmsd_summarized = meter.summarize(verbose=False)
-                complex_rmsd_lt5 = complex_rmsd_summarized['lt5']
-                complex_rmsd_lt2 = complex_rmsd_summarized['lt2']
+                (
+                    ligand_rmsd_summarized,
+                    complex_rmsd_summarized,
+                    interface_rmsd_summarized,
+                ) = meter.summarize(verbose=False)
+                complex_rmsd_lt5 = complex_rmsd_summarized["lt5"]
+                complex_rmsd_lt2 = complex_rmsd_summarized["lt2"]
 
-                print(f'Average CRMSD < 5: {complex_rmsd_lt5}')
-                print(f'Average CRMSD < 2: {complex_rmsd_lt2}')
-                wandb.log({
-                    'complex_rmsd_lt5': complex_rmsd_lt5,
-                    'complex_rmsd_lt2': complex_rmsd_lt2
-                })
-
+                print(f"Average CRMSD < 5: {complex_rmsd_lt5}")
+                print(f"Average CRMSD < 2: {complex_rmsd_lt2}")
+                wandb.log(
+                    {
+                        "complex_rmsd_lt5": complex_rmsd_lt5,
+                        "complex_rmsd_lt2": complex_rmsd_lt2,
+                    }
+                )
 
             # sweep_configuration = {
             #     'method': 'grid',
             #     'name': 'sweep',
             #     'metric': {'goal': 'maximize', 'name': 'complex_rmsd_lt2'},
-            #     'parameters': 
+            #     'parameters':
             #     {
             #         'actual_steps': {'values': [30, 32, 34, 36, 38, 40]},
             #     }
             # }
 
             sweep_configuration = {
-                'method': 'bayes',
-                'name': 'sweep',
-                'metric': {'goal': 'maximize', 'name': 'complex_rmsd_lt2'},
-                'parameters': 
-                {
-                    'temp_sampling': {'max': 4.0, 'min': 0.0},
-                    'temp_psi': {'max': 2.0, 'min': 0.0},
-                    'temp_sigma_data_tr': {'max': 1.0, 'min': 0.0},
-                    'temp_sigma_data_rot': {'max': 1.0, 'min': 0.0}
-                }
+                "method": "bayes",
+                "name": "sweep",
+                "metric": {"goal": "maximize", "name": "complex_rmsd_lt2"},
+                "parameters": {
+                    "temp_sampling": {"max": 4.0, "min": 0.0},
+                    "temp_psi": {"max": 2.0, "min": 0.0},
+                    "temp_sigma_data_tr": {"max": 1.0, "min": 0.0},
+                    "temp_sigma_data_rot": {"max": 1.0, "min": 0.0},
+                },
             }
-            sweep_id = wandb.sweep(sweep=sweep_configuration, project='DIPS optimize low temp with LRMSD conf model')
+            sweep_id = wandb.sweep(
+                sweep=sweep_configuration,
+                project="DIPS optimize low temp with LRMSD conf model",
+            )
 
             wandb.agent(sweep_id, function=try_params_with_confidence_model, count=20)
             return
 
         if args.run_inference_without_confidence_model:
-            printt('Running sequentially without confidence model')
+            printt("Running sequentially without confidence model")
             # loaders["test"].data = sorted(loaders["test"].data, key=lambda x:x['receptor_xyz'].shape[0] + x['ligand_xyz'].shape[0])
 
             # list_bs_32 = loaders["test"][0:64]
@@ -280,12 +315,11 @@ def main(args=None):
             # list_bs_4 = loaders["test"][88:]
             # print(f'list_bs_4: {list_bs_4}')
 
-
             full_list = [loaders["val"]]
             complex_rmsd_lt5 = []
             complex_rmsd_lt2 = []
             time_to_load_data = time.time() - start_time
-            print(f'time_to_load_data: {time_to_load_data}')
+            print(f"time_to_load_data: {time_to_load_data}")
             start_time = time.time()
             for i in tqdm(range(1)):
                 # print(f'bs: {32}')
@@ -299,27 +333,32 @@ def main(args=None):
 
                 # samples_list = samples_list_bs_32 + samples_list_bs_16 + samples_list_bs_8 + samples_list_bs_4
                 samples_list = sample(
-                    loaders["val"], 
-                    model, 
-                    args, 
-                    visualize_first_n_samples=args.visualize_n_val_graphs, 
-                    visualization_dir=args.visualization_path,)
+                    loaders["val"],
+                    model,
+                    args,
+                    visualize_first_n_samples=args.visualize_n_val_graphs,
+                    visualization_dir=args.visualization_path,
+                )
                 full_list.append(samples_list)
                 meter = evaluate_all_rmsds(loaders["val"], samples_list)
-                ligand_rmsd_summarized, complex_rmsd_summarized, interface_rmsd_summarized = meter.summarize(verbose=True)
-                complex_rmsd_lt5.append(complex_rmsd_summarized['lt5'])
-                complex_rmsd_lt2.append(complex_rmsd_summarized['lt2'])
-                printt(f'Finished {i}-th sweep over the data')
+                (
+                    ligand_rmsd_summarized,
+                    complex_rmsd_summarized,
+                    interface_rmsd_summarized,
+                ) = meter.summarize(verbose=True)
+                complex_rmsd_lt5.append(complex_rmsd_summarized["lt5"])
+                complex_rmsd_lt2.append(complex_rmsd_summarized["lt2"])
+                printt(f"Finished {i}-th sweep over the data")
 
             end_time = time.time()
-            print(f'Total time spent processing 5 times: {end_time-start_time}')
-            print(f'time_to_load_data: {time_to_load_data}')
+            print(f"Total time spent processing 5 times: {end_time-start_time}")
+            print(f"time_to_load_data: {time_to_load_data}")
 
             complex_rmsd_lt5 = np.array(complex_rmsd_lt5)
             complex_rmsd_lt2 = np.array(complex_rmsd_lt2)
-            print(f'Average CRMSD < 5: {complex_rmsd_lt5.mean()}')
-            print(f'Average CRMSD < 2: {complex_rmsd_lt2.mean()}')
-            dump_predictions(args,full_list)
+            print(f"Average CRMSD < 5: {complex_rmsd_lt5.mean()}")
+            print(f"Average CRMSD < 2: {complex_rmsd_lt2.mean()}")
+            dump_predictions(args, full_list)
             printt("Dumped data!!")
             return
 
@@ -329,40 +368,51 @@ def main(args=None):
 
         # MAIN RUN
         # run reverse diffusion process
-        print(f'args.temp_sampling: {args.temp_sampling}')
-        
-        loaders,results = generate_loaders(loaders["test"],args) #TODO adapt sample size
-        
-        for i,loader in tqdm(enumerate(loaders), total=len(loaders)):
-            samples_list = sample(loader, model, args, visualize_first_n_samples=args.visualize_n_val_graphs) #TODO: should work on data loader
-            samples_loader = DataLoader(samples_list,batch_size=args.batch_size)
-            pred_list = evaluate_confidence(model_confidence,samples_loader,args) # TODO -> maybe list inside
-            results[i]= results[i]+sorted(list(zip(samples_list,pred_list)),key=lambda x:-x[1]) 
-            printt("Finished Complex!")          
-       
+        print(f"args.temp_sampling: {args.temp_sampling}")
 
-        printt(f'Finished run {args.run_name}')
-        print(f'temp sampling, temp_psi, temp_sigma_data_tr, temp_sigma_data_rot: {args.temp_sampling, args.temp_psi, args.temp_sigma_data_tr, args.temp_sigma_data_rot}')
-        print(f'filtering_model_path: {args.filtering_model_path}')
+        loaders, results = generate_loaders(
+            loaders["test"], args
+        )  # TODO adapt sample size
+
+        for i, loader in tqdm(enumerate(loaders), total=len(loaders)):
+            samples_list = sample(
+                loader,
+                model,
+                args,
+                visualize_first_n_samples=args.visualize_n_val_graphs,
+            )  # TODO: should work on data loader
+            samples_loader = DataLoader(samples_list, batch_size=args.batch_size)
+            pred_list = evaluate_confidence(
+                model_confidence, samples_loader, args
+            )  # TODO -> maybe list inside
+            results[i] = results[i] + sorted(
+                list(zip(samples_list, pred_list)), key=lambda x: -x[1]
+            )
+            printt("Finished Complex!")
+
+        printt(f"Finished run {args.run_name}")
+        print(
+            f"temp sampling, temp_psi, temp_sigma_data_tr, temp_sigma_data_rot: {args.temp_sampling, args.temp_psi, args.temp_sigma_data_tr, args.temp_sigma_data_rot}"
+        )
+        print(f"filtering_model_path: {args.filtering_model_path}")
 
         end_time = time.time()
-        print(f'Total time spent: {end_time-start_time}')
+        print(f"Total time spent: {end_time-start_time}")
         meter = evaluate_all_predictions(results)
-        #reverse_diffusion_metrics = evaluate_predictions(results)
-        #printt(reverse_diffusion_metrics)
-        
-        dump_predictions(args,results)
-        printt(f"Dumped data!! in {args.prediction_storage}")
-        
+        # reverse_diffusion_metrics = evaluate_predictions(results)
+        # printt(reverse_diffusion_metrics)
 
+        dump_predictions(args, results)
+        printt(f"Dumped data!! in {args.prediction_storage}")
 
         # log(test_scores, args.log_file, reduction=False)
         # end of all folds ========
 
+
 def evaluate_all_predictions(results):
     ground_truth = [res[0][0] for res in results]
     best_pred = [res[1][0] for res in results]
-    meter = evaluate_all_rmsds(ground_truth,best_pred)
+    meter = evaluate_all_rmsds(ground_truth, best_pred)
     _ = meter.summarize()
     return meter
 
@@ -370,39 +420,43 @@ def evaluate_all_predictions(results):
 def evaluate_predictions(results):
     ground_truth = [res[0][0] for res in results]
     best_pred = [res[1][0] for res in results]
-    eval_result = evaluate_pose(ground_truth,best_pred)
+    eval_result = evaluate_pose(ground_truth, best_pred)
     rmsds = np.array(eval_result["rmsd"])
-    reverse_diffusion_metrics = {'rmsds_lt2': (100 * (rmsds < 2).sum() / len(rmsds)),
-                                    'rmsds_lt5': (100 * (rmsds < 5).sum() / len(rmsds)),
-                                    'rmsds_lt10': (100 * (rmsds < 10).sum() / len(rmsds)),
-                                    'rmsds_mean': rmsds.mean(),
-                                    'rmsds_median': np.median(rmsds)}
+    reverse_diffusion_metrics = {
+        "rmsds_lt2": (100 * (rmsds < 2).sum() / len(rmsds)),
+        "rmsds_lt5": (100 * (rmsds < 5).sum() / len(rmsds)),
+        "rmsds_lt10": (100 * (rmsds < 10).sum() / len(rmsds)),
+        "rmsds_mean": rmsds.mean(),
+        "rmsds_median": np.median(rmsds),
+    }
     return reverse_diffusion_metrics
 
-def dump_predictions(args,results):
-    with open(args.prediction_storage, 'wb') as f:
+
+def dump_predictions(args, results):
+    with open(args.prediction_storage, "wb") as f:
         pickle.dump(results, f)
 
+
 def load_predictions(args):
-    with open(args.prediction_storage, 'rb') as f:
+    with open(args.prediction_storage, "rb") as f:
         results = pickle.load(f)
     return results
 
 
-def generate_loaders(loader,args):
+def generate_loaders(loader, args):
     result = []
     data = loader.data
     ground_truth = []
     for d in data:
-        #element = BindingDataset(args, {}, apply_transform=False)
+        # element = BindingDataset(args, {}, apply_transform=False)
         data_list = []
-        
+
         for i in range(args.num_samples):
             data_list.append(copy.deepcopy(d))
 
         if args.mirror_ligand:
-            #printt('Mirroring half of the complexes')
-            for i in range(0, args.num_samples//2):
+            # printt('Mirroring half of the complexes')
+            for i in range(0, args.num_samples // 2):
                 e = data_list[i]["graph"]
 
                 data = HeteroData()
@@ -414,8 +468,12 @@ def generate_loaders(loader,args):
                 data["ligand"].pos = e["receptor"].pos
                 data["ligand"].x = e["receptor"].x
 
-                data["receptor", "contact", "receptor"].edge_index = e["ligand", "contact", "ligand"].edge_index
-                data["ligand", "contact", "ligand"].edge_index = e["receptor", "contact", "receptor"].edge_index
+                data["receptor", "contact", "receptor"].edge_index = e[
+                    "ligand", "contact", "ligand"
+                ].edge_index
+                data["ligand", "contact", "ligand"].edge_index = e[
+                    "receptor", "contact", "receptor"
+                ].edge_index
 
                 # center receptor at origin
                 center = data["receptor"].pos.mean(dim=0, keepdim=True)
@@ -427,20 +485,18 @@ def generate_loaders(loader,args):
                 data_list[i]["graph"] = data
 
         element = BindingDataset(args, data_list, apply_transform=False)
-        #element.data = data_list
-        #element.length = args.num_samples
+        # element.data = data_list
+        # element.length = args.num_samples
         # print(f'2: {element[2]}')
         # print(f'2_ligand: {element[2]["ligand"]}')
         # print(f'2_ligand_num_nodes: {element[2]["ligand"].num_nodes}')
         # print(f'0: {element[0]["ligand"].num_nodes}')
-        
+
         result.append(element)
-    
+
     for element in loader:
-        ground_truth.append([(element,float("inf"))])
-    return result,ground_truth
-
-
+        ground_truth.append([(element, float("inf"))])
+    return result, ground_truth
 
 
 # def remove_label(loader):
@@ -461,7 +517,7 @@ def generate_loaders(loader,args):
 #         print(
 #             f"HAPPENING | The filtering dataset did not contain {orig_complex_graph.name[0]}. We are skipping this complex.")
 #         continue
-    
+
 #     success = 0
 #     while success == 0 or success == -1 or success == -2:
 #         try:
@@ -618,4 +674,3 @@ def generate_loaders(loader,args):
 
 if __name__ == "__main__":
     main()
-
