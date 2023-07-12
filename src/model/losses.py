@@ -1,25 +1,33 @@
+from typing import Self
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+from config import DiffusionCfg
 from geom_utils import NoiseSchedule, score_norm
 
 
 class DiffusionLoss(nn.Module):
-    def __init__(self, args):
-        super(DiffusionLoss, self).__init__()
-        self.args = args
-        self.tr_weight = args.tr_weight
-        self.rot_weight = args.rot_weight
-        self.tor_weight = args.tor_weight
-        self.noise_schedule = NoiseSchedule(args)
+    def __init__(
+        self,
+        tr_weight: float,
+        rot_weight: float,
+        tor_weight: float,
+        noise_schedule: NoiseSchedule,
+        num_gpu: int,
+    ):
+        super().__init__()
+        self.num_gpu = num_gpu
+        self.tr_weight = tr_weight
+        self.rot_weight = rot_weight
+        self.tor_weight = tor_weight
+        self.noise_schedule = noise_schedule
         self.eps = 1e-5
 
-    def forward(self, data, outputs,
-                apply_mean=True, no_torsion=True):
+    def forward(self, data, outputs, apply_mean: bool = True, no_torsion: bool = True):
         """
-            @param (dict) outputs
-            @param (torch_geometric.data.HeteroData) data
+        @param (dict) outputs
+        @param (torch_geometric.data.HeteroData) data
         """
         # extract outputs
         tr_pred = outputs["tr_pred"]
@@ -30,7 +38,7 @@ class DiffusionLoss(nn.Module):
         # gather t values
         complex_t = []
         for noise_type in ["tr", "rot", "tor"]:
-            if torch.cuda.is_available() and self.args.num_gpu == 1:
+            if torch.cuda.is_available() and self.num_gpu == 1:
                 cur_t = data.complex_t[noise_type]
             else:
                 cur_t = torch.cat([d.complex_t[noise_type] for d in data])
@@ -43,7 +51,7 @@ class DiffusionLoss(nn.Module):
         # translation component
         tr_score = (
             torch.cat([d.tr_score for d in data], dim=0)
-            if device.type == "cuda" and self.args.num_gpu > 1
+            if device.type == "cuda" and self.num_gpu > 1
             else data.tr_score.cpu()
         )
         tr_s = tr_s.unsqueeze(-1).cpu()
@@ -53,14 +61,13 @@ class DiffusionLoss(nn.Module):
         # rotation component
         rot_score = (
             torch.cat([d.rot_score for d in data], dim=0)
-            if device.type == "cuda" and self.args.num_gpu > 1
+            if device.type == "cuda" and self.num_gpu > 1
             else data.rot_score.cpu()
         )
         rot_score_norm = score_norm(rot_s.cpu()).unsqueeze(-1)
-        rot_loss = (((rot_pred.cpu() - rot_score) /
-            (rot_score_norm + self.eps)) ** 2).mean(
-            dim=mean_dims
-        )
+        rot_loss = (
+            ((rot_pred.cpu() - rot_score) / (rot_score_norm + self.eps)) ** 2
+        ).mean(dim=mean_dims)
         rot_base_loss = ((rot_score / rot_score_norm) ** 2).mean(dim=mean_dims).detach()
 
         # torsion component
@@ -115,10 +122,8 @@ class DiffusionLoss(nn.Module):
                 tor_loss = torch.zeros(1, dtype=torch.float)
                 tor_base_loss = torch.zeros(1, dtype=torch.float)
             else:
-                tor_loss = torch.zeros(len(rot_loss),
-                                       dtype=torch.float)
-                tor_base_loss = torch.zeros(len(rot_loss),
-                                            dtype=torch.float)
+                tor_loss = torch.zeros(len(rot_loss), dtype=torch.float)
+                tor_base_loss = torch.zeros(len(rot_loss), dtype=torch.float)
 
         # compile and re-weight losses
         loss = tr_loss * self.tr_weight
@@ -134,10 +139,14 @@ class DiffusionLoss(nn.Module):
             "rot_base_loss": rot_base_loss,
         }
         if not no_torsion:
-            losses.update({
-                "tor_loss": tor_loss,
-                "tor_base_loss": tor_base_loss
-            })
+            losses.update({"tor_loss": tor_loss, "tor_base_loss": tor_base_loss})
 
         return losses
 
+    @classmethod
+    def from_config(
+        cls, cfg: DiffusionCfg, noise_schedule: NoiseSchedule, num_gpu: int
+    ) -> Self:
+        return cls(
+            cfg.tr_weight, cfg.rot_weight, cfg.tor_weight, noise_schedule, num_gpu
+        )
