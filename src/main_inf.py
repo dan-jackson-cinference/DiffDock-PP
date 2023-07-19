@@ -1,45 +1,44 @@
-import pickle
 import resource
 import time
-import traceback
 
 import hydra
-import numpy as np
+
 import torch
-import wandb
+
 from hydra.core.config_store import ConfigStore
 from torch_geometric.loader import DataLoader
-from tqdm import tqdm
 
 from confidence import evaluate_confidence
 from data.data_factory import load_data
-from data.load_data import BindingDataset, get_datasets, get_loaders, split_data
-from evaluation.compute_rmsd import evaluate_all_rmsds
+from data.load_data import get_datasets, get_loaders, split_data
+from data.dataset import BindingDataset, SamplingDataset
+from evaluate import evaluate_all_predictions
+
 from geom_utils.transform import NoiseSchedule, NoiseTransform
 from model.factory import load_confidence_model, load_score_model, to_cuda
 
 # from helpers import WandbLogger, TensorboardLogger
 from sample import Sampler, initialize_random_positions
 from seed import set_seed
-from src.config import DiffDockCfg
-from train import evaluate_pose
+from config import DiffDockCfg
+
 from utils import printt
 
 cs = ConfigStore.instance()
 cs.store(name="test_config", node=DiffDockCfg)
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="diffdock")
+@hydra.main(version_base=None, config_path="../config/", config_name="config")
 def main(cfg: DiffDockCfg):
     """test mode: load up all replicates from checkpoint directory
     and evaluate by sampling from reverse diffusion process"""
     printt("Starting Inference")
-
     set_seed(cfg.training_cfg.seed)
     inf_cfg = cfg.inference_cfg
     log_cfg = cfg.logging_cfg
 
-    torch.cuda.set_device(cfg.training_cfg.gpu)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     torch.hub.set_dir("torchhub")
 
     start_time = time.time()
@@ -53,8 +52,9 @@ def main(cfg: DiffDockCfg):
     if cfg.training_cfg.num_workers >= 1:
         torch.multiprocessing.set_sharing_strategy("file_system")
 
-    processed_data, data_params = load_data(cfg.data_conf, cfg.model_cfg.lm_embed_dim)
-
+    processed_data, data_params = load_data(
+        cfg.run_cfg.experiment_root_dir, cfg.data_cfg, cfg.model_cfg.lm_embed_dim
+    )
     printt("finished loading and processing data")
     printt("running inference")
 
@@ -62,92 +62,96 @@ def main(cfg: DiffDockCfg):
     # load and convert data to DataLoaders
     noise_schedule = NoiseSchedule.from_config(cfg.diffusion_cfg)
     noise_transform = NoiseTransform(noise_schedule)
-    data_split = split_data(
-        processed_data,
-        fold,
-        cfg.training_cfg.num_folds,
-        cfg.training_cfg.mode,
-    )
-    datasets = get_datasets(data_split, noise_transform, BindingDataset)
-    dataloaders = get_loaders(
-        datasets,
-        cfg.training_cfg.batch_size,
-        cfg.training_cfg.num_workers,
-        cfg.training_cfg.num_gpu,
-        cfg.training_cfg.mode,
-    )
+    # data_split = split_data(
+    #     processed_data,
+    #     fold,
+    #     cfg.training_cfg.num_folds,
+    #     cfg.training_cfg.mode,
+    # )
+    # datasets = get_datasets(data_split, noise_transform, BindingDataset)
+    # dataloaders = get_loaders(
+    #     datasets,
+    #     cfg.training_cfg.batch_size,
+    #     cfg.training_cfg.num_workers,
+    #     cfg.training_cfg.num_gpu,
+    #     cfg.training_cfg.mode,
+    # )
     printt("finished creating data splits")
 
     # get model and load checkpoint, if relevant
     score_model = load_score_model(
         cfg.diffusion_cfg,
-        cfg.e3nn_cfg,
+        cfg.model_cfg.score_model_cfg,
         noise_schedule,
         cfg.run_cfg.score_model_path,
-        dropout=cfg.model_cfg.dropout,
-        num_atoms=0,
+        cfg.model_cfg.lm_embed_dim,
+        num_atoms=23,
         num_gpu=0,
         fold=fold,
     )
     score_model = to_cuda(score_model, cfg.training_cfg.gpu, cfg.training_cfg.gpu)
 
     confidence_model = load_confidence_model(
-        cfg.e3nn_cfg,
+        cfg.model_cfg.confidence_model_cfg,
         noise_schedule,
         cfg.run_cfg.filtering_model_path,
-        dropout=cfg.model_cfg.dropout,
-        num_atoms=0,
+        cfg.model_cfg.lm_embed_dim,
+        num_atoms=23,
         fold=fold,
     )
     confidence_model = to_cuda(
         confidence_model, cfg.training_cfg.gpu, cfg.training_cfg.gpu
     )
     printt("finished loading model")
-
     # MAIN RUN
     # run reverse diffusion process
     if inf_cfg.temp_cfg is not None:
-        print(f"args.temp_sampling: {inf_cfg.temp_cfg.temp_sampling}")
+        print(f"temp_sampling: {inf_cfg.temp_cfg.temp_sampling}")
+
+    processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].write_to_pdb(
+        f"{cfg.data_cfg.pred_cfg.pdb_id}_orig.pdb"
+    )
 
     initial_positions = initialize_random_positions(
-        processed_data,
+        processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].graph,
         cfg.run_cfg.num_samples,
         cfg.diffusion_cfg.tr_s_max,
         no_torsion=True,
     )
+
     sampler = Sampler(
         score_model,
         noise_transform,
         inf_cfg.num_steps,
-        inf_cfg.num_steps,
-        inf_cfg.no_final_noise,
-        inf_cfg.no_random,
+        batch_size=5,
+        no_final_noise=inf_cfg.no_final_noise,
+        no_random=inf_cfg.no_random,
+        device=device,
     )
 
-    sampler.sample(initial_positions, inf_cfg.ode, inf_cfg.temp_cfg)
-
-    pred_list = evaluate_confidence(
-        confidence_model, samples_loader, args
+    sampling_dataset = SamplingDataset(initial_positions)
+    samples = sampler.sample(sampling_dataset, inf_cfg.ode, inf_cfg.temp_cfg)
+    samples_loader = DataLoader(samples[-1], batch_size=cfg.run_cfg.num_samples)
+    confidence = evaluate_confidence(
+        confidence_model, samples_loader, device
     )  # TODO -> maybe list inside
-    results[i] = results[i] + sorted(
-        list(zip(samples_list, pred_list)), key=lambda x: -x[1]
-    )
+
+    print(confidence)
+    samples_list = [sample for sample in samples[-1]]
+    results = sorted(list(zip(samples_list, confidence)), key=lambda x: -x[1])
     printt("Finished Complex!")
 
     printt(f"Finished run {log_cfg.run_name}")
-    print(f"filtering_model_path: {cfg.run_cfg.filtering_model_path}")
+    print(f"Total time spent: {time.time()-start_time}")
+    print(results[0])
 
-    end_time = time.time()
-    print(f"Total time spent: {end_time-start_time}")
-    meter = evaluate_all_predictions(results)
-    # reverse_diffusion_metrics = evaluate_predictions(results)
-    # printt(reverse_diffusion_metrics)
-
-    dump_predictions(args, results)
-    printt(f"Dumped data!! in {args.prediction_storage}")
-
-    # log(test_scores, args.log_file, reduction=False)
-    # end of all folds ========
+    for i, (sample, confidence_val) in enumerate(results[:10]):
+        processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].update_proteins_from_graph(
+            sample
+        )
+        processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].write_to_pdb(
+            f"sample_{i}_confidence_{confidence_val:.3f}.pdb"
+        )
 
 
 if __name__ == "__main__":

@@ -22,3 +22,4 @@ plots
 datasets/DIPS/pairs_pruned/
 datasets/DIPS/dips.zip
 torchhub
+outputs

@@ -143,3 +143,34 @@ class RandomizedConfidenceDataset(Dataset):
         # compute rmsd
         rmsd = compute_rmsd(original_pos, pos)
         return complex_graph, rmsd
+
+
+class SamplingDataset(Dataset):
+    """
+    Protein-protein binding dataset
+    """
+
+    def __init__(
+        self,
+        data: list[HeteroData],
+        noise_transform: Optional[NoiseTransform] = None,
+    ):
+        super().__init__(transform=noise_transform)
+        # select subset for given split
+        self.data = data
+
+    def len(self):
+        return len(self.data)
+
+    def __delitem__(self, idx: int) -> None:
+        """
+        Easier deletion interface. MUST update length.
+        """
+        del self.data[idx]
+
+    def get(self, idx: int) -> HeteroData:
+        """
+        Create graph object to keep original object intact,
+        so we can modify pos, etc.
+        """
+        return self.data[idx]

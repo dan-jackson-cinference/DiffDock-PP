@@ -4,14 +4,16 @@ of syntax and nicer flow.
 
 2022.11.08
 """
+from __future__ import annotations
+from typing import Optional
 
 import copy
 from dataclasses import dataclass
-from typing import Optional, Self
+
 
 import numpy as np
 import torch
-from torch import Tensor
+from torch import Tensor, device
 from torch_geometric.data import HeteroData
 from torch_geometric.transforms import BaseTransform
 
@@ -56,7 +58,7 @@ class NoiseSchedule:
         return tr_s, rot_s, tor_s
 
     @classmethod
-    def from_config(cls, cfg: DiffusionCfg) -> Self:
+    def from_config(cls, cfg: DiffusionCfg) -> NoiseSchedule:
         return cls(
             cfg.tr_s_min,
             cfg.tr_s_max,
@@ -219,23 +221,30 @@ class NoiseTransform(BaseTransform):
         return data
 
 
-def set_time(complex_graphs, t_tr, t_rot, t_tor, batch_size: int, device=None):
+def set_time(
+    graph: HeteroData,
+    t_tr: float,
+    t_rot: float,
+    t_tor: float,
+    batch_size: int,
+    device: Optional[device] = None,
+) -> None:
     """
     Save sampled time to current batch
     """
-    lig_size = complex_graphs["ligand"].num_nodes
-    complex_graphs["ligand"].node_t = {
+    lig_size = graph["ligand"].num_nodes
+    graph["ligand"].node_t = {
         "tr": t_tr * torch.ones(lig_size).to(device),
         "rot": t_rot * torch.ones(lig_size).to(device),
         "tor": t_tor * torch.ones(lig_size).to(device),
     }
-    rec_size = complex_graphs["receptor"].num_nodes
-    complex_graphs["receptor"].node_t = {
+    rec_size = graph["receptor"].num_nodes
+    graph["receptor"].node_t = {
         "tr": t_tr * torch.ones(rec_size).to(device),
         "rot": t_rot * torch.ones(rec_size).to(device),
         "tor": t_tor * torch.ones(rec_size).to(device),
     }
-    complex_graphs.complex_t = {
+    graph.complex_t = {
         "tr": t_tr * torch.ones(batch_size).to(device),
         "rot": t_rot * torch.ones(batch_size).to(device),
         "tor": t_tor * torch.ones(batch_size).to(device),

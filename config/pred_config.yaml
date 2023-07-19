@@ -1,0 +1,138 @@
+---
+# file is parsed by inner-most keys only
+run_cfg:
+    save_path: ckpts/test
+    checkpoint_path: ckpts
+    filtering_model_path: checkpoints/confidence_model_dips/fold_0/
+    score_model_path: checkpoints/large_model_dips/fold_0/
+    num_samples: 10
+    prediction_storage: storage
+    torchhub_path: torchhub
+    tensorboard_path: tensorboard
+logging_cfg:
+    project: test
+    logger: tensorboard
+    run_name: test
+data_cfg:
+    dataset: single_pair
+    data_root_dir: datasets
+    data_file: datasets/test
+    recache: false
+    debug: false
+    resolution: backbone
+    no_graph_cache: true
+    knn_size: 20
+    use_orientation_features: false
+    multiplicity: 1
+    use_unbound: false
+    pred_cfg:
+        pdb_id: 1A2K
+        receptor_path: datasets/single_pair_dataset/structures/1A2K_r_b.pdb
+        ligand_path: datasets/single_pair_dataset/structures/1A2K_l_b.pdb
+processing_cfg:
+    receptor_radius: 30
+    c_alpha_max_neighbours: 10
+    atom_radius: 5
+    atom_max_neighbours: 8
+    matching_popsize: 20
+    matching_maxiter: 20
+model_cfg:
+    nn_size: 20
+    lm_embed_dim: 1280
+    score_model_cfg:
+        max_radius: 30.0
+        cross_max_dist: 80
+        dynamic_max_cross: true
+        cross_cutoff_weight: 3
+        cross_cutoff_bias: 40
+        ns: 32
+        nv: 6
+        scale_by_sigma: true
+        no_torsion: true
+        num_conv_layers: 4
+        embedding_type: sinusoidal
+        sigma_embed_dim: 32
+        embedding_scale: 10000
+        dist_embed_dim: 32
+        cross_dist_embed_dim: 32
+        no_batch_norm: true
+        use_second_order_repr: false
+        dropout: 0.0
+    confidence_model_cfg:
+        max_radius: 30.0
+        cross_max_dist: 80
+        dynamic_max_cross: true
+        cross_cutoff_weight: 3
+        cross_cutoff_bias: 40
+        ns: 16
+        nv: 4
+        scale_by_sigma: true
+        no_torsion: true
+        num_conv_layers: 4
+        embedding_type: sinusoidal
+        sigma_embed_dim: 32
+        embedding_scale: 10000
+        dist_embed_dim: 32
+        cross_dist_embed_dim: 32
+        no_batch_norm: true
+        use_second_order_repr: false
+        dropout: 0.0 
+embedding_cfg:
+    hidden_size: 64
+    dropout: 0.1
+    knn_size: 20
+training_cfg:
+    mode: 'test'
+    batch_size: 1
+    num_workers: 1
+    epochs: 2000
+    num_folds: 1
+    tr_weight: 0.5
+    rot_weight: 0.5
+    tor_weight: 0.
+    test_fold: 0
+    patience: 2000
+    seed: 0
+    num_gpu: 1
+    gpu: 0
+    metric: loss
+    save_pred: true
+    no_tqdm: false
+    save_model_every: 10
+optimizer_cfg:
+    lr: 0.001
+    weight_decay: 0.
+    score_loss_weight: 0.
+    energy_loss_weight: 0.
+diffusion_cfg:
+    tr_weight: 0.5
+    rot_weight: 0.5
+    tor_weight: 0.0
+    tr_s_min: 0.01
+    tr_s_max: 30.0
+    rot_s_min: 0.01
+    rot_s_max: 1.65
+    tor_s_min: 0.0314
+    tor_s_max: 3.14
+    sample_train: true
+    num_inference_complexes_train_data: 1200
+inference_cfg:
+    num_steps: 40
+    actual_steps: 40
+    val_inference_freq: 10
+    mirror_ligand: false
+    run_inference_without_confidence_model: false
+    wandb_sweep: false
+    no_final_noise: true
+    no_random: false
+    ode: false
+    # optimized for without conf_model
+    temp_cfg:
+        temp_sampling: 2.439 # default 1.0. Set this to 1.0 to deactivate low temp sampling
+        temp_psi: 0.216 # default 0.0
+        temp_sigma_data_tr: 0.593 # default 0.5
+        temp_sigma_data_rot:  0.228 # default 0.5
+#  temp_sampling: 5.33 # default 1.0. Set this to 1.0 to deactivate low temp sampling
+#  temp_psi: 1.05 # default 0.0
+#  temp_sigma_data_tr: 0.40 # default 0.5
+#  temp_sigma_data_rot:  0.64 # default 0.5

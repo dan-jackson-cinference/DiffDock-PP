@@ -1,4 +1,4 @@
-from typing import Self
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
@@ -146,7 +146,7 @@ class DiffusionLoss(nn.Module):
     @classmethod
     def from_config(
         cls, cfg: DiffusionCfg, noise_schedule: NoiseSchedule, num_gpu: int
-    ) -> Self:
+    ) -> DiffusionLoss:
         return cls(
             cfg.tr_weight, cfg.rot_weight, cfg.tor_weight, noise_schedule, num_gpu
         )

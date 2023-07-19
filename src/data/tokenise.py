@@ -1,10 +1,11 @@
 import itertools
+from typing import Optional
 
 from data.protein import Element, Protein
 
 
 def tokenize(
-    proteins: list[Protein], tokenizer: dict[Element, int] = {}
+    proteins: list[Protein], tokenizer: Optional[dict[Element, int]] = None
 ) -> dict[Element, int]:
     """
     Tokenize every item[key] in data.
@@ -18,8 +19,9 @@ def tokenize(
     all_values = set(
         itertools.chain(*[protein.filtered_elements for protein in proteins])
     )
-
-    for item in sorted(all_values):
+    if tokenizer is None:
+        tokenizer = {}
+    for item in all_values:
         if item not in tokenizer:
             tokenizer[item] = len(tokenizer) + 1  # 1-index
 

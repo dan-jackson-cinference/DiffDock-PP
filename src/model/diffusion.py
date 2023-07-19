@@ -4,9 +4,9 @@ modifications.
 
 2022.11.08
 """
-
+from __future__ import annotations
 import math
-from typing import Self
+
 
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ from torch import Tensor, nn
 from torch_cluster import radius, radius_graph
 from torch_scatter import scatter, scatter_mean
 
-from config import E3NNCfg
+from config import BaseModelCfg
 from geom_utils import NoiseSchedule, score_norm
 
 from .utils import _init
@@ -32,6 +32,7 @@ class AtomEmbedding(nn.Module):
         self, ns: int, sigma_embed_dim: int, lm_embed_dim: int, num_atoms: int
     ):
         super().__init__()
+
         # add 1 for padding
         self.atom_ebd = nn.Embedding(num_atoms + 1, ns)
         self.sigma_ebd = nn.Linear(sigma_embed_dim, ns)
@@ -139,19 +140,19 @@ class TensorProductScoreModel(torch.nn.Module):
         cross_cutoff_bias: float,
         ns: int,
         nv: int,
-        embedding_type: str,
         scale_by_sigma: bool,
         no_torsion: bool,
         num_conv_layers: int,
+        embedding_type: str,
         sigma_embed_dim: int,
-        lm_embed_dim: int,
+        embedding_scale: int,
         dist_embed_dim: int,
         cross_dist_embed_dim: int,
+        lm_embed_dim: int,
+        no_batch_norm: bool,
+        use_second_order_repr: bool,
         dropout: float,
         num_atoms: int,
-        embedding_scale: int,
-        use_second_order_repr: bool,
-        no_batch_norm: bool,
         confidence_mode: bool = False,
         confidence_dropout: int = 0,
         confidence_no_batch_norm: bool = True,
@@ -317,15 +318,15 @@ class TensorProductScoreModel(torch.nn.Module):
     @classmethod
     def from_config(
         cls,
-        cfg: E3NNCfg,
+        cfg: BaseModelCfg,
         noise_schedule: NoiseSchedule,
-        dropout: float,
+        lm_embed_dim: int,
         num_atoms: int,
         confidence_mode: bool = False,
         confidence_dropout: int = 0,
         confidence_no_batch_norm: bool = True,
         num_confidence_outputs: int = 1,
-    ) -> Self:
+    ) -> TensorProductScoreModel:
         return cls(
             noise_schedule,
             cfg.max_radius,
@@ -335,19 +336,19 @@ class TensorProductScoreModel(torch.nn.Module):
             cfg.cross_cutoff_bias,
             cfg.ns,
             cfg.nv,
-            cfg.embedding_type,
             cfg.scale_by_sigma,
             cfg.no_torsion,
             cfg.num_conv_layers,
+            cfg.embedding_type,
             cfg.sigma_embed_dim,
-            cfg.lm_embed_dim,
+            cfg.embedding_scale,
             cfg.dist_embed_dim,
             cfg.cross_dist_embed_dim,
-            dropout,
-            num_atoms,
-            cfg.embedding_scale,
-            cfg.use_second_order_repr,
+            lm_embed_dim,
             cfg.no_batch_norm,
+            cfg.use_second_order_repr,
+            cfg.dropout,
+            num_atoms,
             confidence_mode,
             confidence_dropout,
             confidence_no_batch_norm,
@@ -586,6 +587,9 @@ class TensorProductScoreModel(torch.nn.Module):
             batch[key].node_t["tr"]
         )  # tr rot and tor noise is all the same
         # if no ESM models, graph.x should still be flat
+        # print(batch[key].x.device)
+        # print(batch[key].node_sigma_emb.device)
+        # exit()
         if len(batch[key].x.shape) == 1:
             batch[key].x = batch[key].x[:, None]
         node_attr = torch.cat([batch[key].x, batch[key].node_sigma_emb], 1)
@@ -705,25 +709,25 @@ class TensorProductScoreModel(torch.nn.Module):
 
 class GaussianSmearing(nn.Module):
     # used to embed the edge dists
-    def __init__(self, start=0.0, stop=5.0, num_gaussians=50):
+    def __init__(self, start: float = 0.0, stop: float = 5.0, num_gaussians: int = 50):
         super().__init__()
         offset = torch.linspace(start, stop, num_gaussians)
         self.coeff = -0.5 / (offset[1] - offset[0]).item() ** 2
         self.register_buffer("offset", offset)
 
-    def forward(self, dist):
+    def forward(self, dist: Tensor):
         dist = dist.view(-1, 1) - self.offset.view(1, -1)
         return torch.exp(self.coeff * torch.pow(dist, 2))
 
 
 class SinusoidalEmbedding(nn.Module):
-    def __init__(self, args):
+    def __init__(self, sigma_embed_dim: int, embedding_scale: int):
         super().__init__()
-        self.embed_dim = args.sigma_embed_dim
-        self.scale = args.embedding_scale
+        self.embed_dim = sigma_embed_dim
+        self.scale = embedding_scale
         self.max_positions = 1e4
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         """
         From https://github.com/hojonathanho/diffusion/blob/master/diffusion_tf/nn.py
         """
@@ -757,7 +761,7 @@ class GaussianFourierProjection(nn.Module):
             torch.randn(self.embed_dim // 2) * self.scale, requires_grad=False
         )
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         x_proj = x[:, None] * self.W[None, :] * 2 * np.pi
         emb = torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
         return emb

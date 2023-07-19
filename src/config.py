@@ -4,6 +4,9 @@ from typing import Literal, Optional
 
 @dataclass
 class RunCfg:
+    experiment_root_dir: str
+    cache_dir: str
+    run_name: str
     save_path: str
     checkpoint_path: Optional[str]
     filtering_model_path: str
@@ -17,7 +20,7 @@ class RunCfg:
 @dataclass
 class LoggingCfg:
     project: Optional[str]
-    logger: Literal["wandb", "tensorboard"]
+    logger: str  # Literal["wandb", "tensorboard"]
     run_name: Optional[str] = None
     wandb_run_name: Optional[str] = None
     log_frequency: int = 10
@@ -25,6 +28,38 @@ class LoggingCfg:
     group: Optional[str] = None
     visualize_n_val_graphs: int = 5
     visualization_path: str = "./visualization"
+
+
+# @dataclass
+# class DataReadCfg:
+#     dataset: Literal["dips", "db5", "toy"]
+#     data_path: str
+#     data_file: str
+#     pose_path: str
+#     pose_file: str
+
+
+@dataclass
+class PredCfg:
+    pdb_id: int
+    receptor_path: str
+    ligand_path: str
+
+
+@dataclass
+class DataCfg:
+    dataset: str  # Literal["dips", "db5", "single_pair", "sabdab"]
+    data_root_dir: str
+    data_file: str
+    recache: bool
+    debug: bool
+    resolution: str  # Literal["residue", "backbone", "atom"]
+    no_graph_cache: bool
+    use_orientation_features: bool
+    knn_size: int
+    use_unbound: bool
+    multiplicity: int
+    pred_cfg: PredCfg
 
 
 @dataclass
@@ -38,38 +73,6 @@ class ProcessingCfg:
     max_lig_size: Optional[int] = None
     remove_hs: bool = False
     multiplicity: int = 1
-
-
-# @dataclass
-# class DataReadCfg:
-#     dataset: Literal["dips", "db5", "toy"]
-#     data_path: str
-#     data_file: str
-#     pose_path: str
-#     pose_file: str
-
-
-@dataclass
-class DataCfg:
-    dataset: Literal["dips", "db5", "single_pair", "sabdab"]
-    data_root_dir: str
-    data_file: str
-    recache: bool
-    debug: bool
-    resolution: Literal["residue", "backbone", "atom"]
-    no_graph_cache: bool
-    use_orientation_features: bool
-    knn_size: int
-    use_unbound: bool
-    multiplicity: int
-
-
-@dataclass
-class ModelCfg:
-    model_type: str
-    no_batch_norm: bool
-    lm_embed_dim: int
-    dropout: float
 
 
 @dataclass
@@ -86,30 +89,39 @@ class DiffusionCfg:
 
 
 @dataclass
-class E3NNCfg:
+class BaseModelCfg:
+    max_radius: float
+    cross_max_dist: float
+    dynamic_max_cross: bool
+    cross_cutoff_weight: float
+    cross_cutoff_bias: float
+    ns: int
+    nv: int
+    scale_by_sigma: bool
     no_torsion: bool
-    max_radius: float = 5.0
-    scale_by_sigma: bool = True
-    ns: int = 16
-    nv: int = 4
-    dist_embed_dim: int = 32
-    cross_dist_embed_dim: int = 32
-    lm_embed_dim: int = 0
-    no_batch_norm: bool = False
-    use_second_order_repr: bool = False
-    cross_max_dist: float = 80.0
-    dynamic_max_cross: bool = False
-    cross_cutoff_weight: float = 3.0
-    cross_cutoff_bias: float = 40.0
-    embedding_type: str = "sinusoidal"
-    sigma_embed_dim: int = 32
-    embedding_scale: int = 10000
-    num_conv_layers: int = 2
+    num_conv_layers: int
+    embedding_type: str
+    sigma_embed_dim: int
+    embedding_scale: int
+    dist_embed_dim: int
+    cross_dist_embed_dim: int
+    lm_embed_dim: int
+    no_batch_norm: bool
+    use_second_order_repr: bool
+    dropout: float
+
+
+@dataclass
+class ModelCfg:
+    knn_size: int
+    lm_embed_dim: int
+    score_model_cfg: BaseModelCfg
+    confidence_model_cfg: BaseModelCfg
 
 
 @dataclass
 class TrainingCfg:
-    mode: Literal["train", "test"]
+    mode: str
     batch_size: int
     num_workers: int
     epochs: int
@@ -155,7 +167,7 @@ class InferenceCfg:
 
 
 @dataclass
-class EmbeddingsCfg:
+class EmbeddingCfg:
     hidden_size: int = 64
     dropout: float = 0.1
     knn_size: int = 20
@@ -176,16 +188,18 @@ class ConfidenceModelCfg:
     generate_n_predictions: int = 7
     samples_directory: str = ""
     use_randomized_confidence_data: bool = False
-    rmsd_type: Literal["complex", "interface", "simple"] = "simple"
+    rmsd_type: str = "simple"  # Literal["complex", "interface", "simple"] = "simple"
 
 
 @dataclass
 class DiffDockCfg:
-    data_conf: DataCfg
     run_cfg: RunCfg
     logging_cfg: LoggingCfg
+    data_cfg: DataCfg
+    processing_cfg: ProcessingCfg
     model_cfg: ModelCfg
-    e3nn_cfg: E3NNCfg
+    embedding_cfg: EmbeddingCfg
     training_cfg: TrainingCfg
+    optimizer_cgf: OptimizerCfg
     diffusion_cfg: DiffusionCfg
     inference_cfg: InferenceCfg

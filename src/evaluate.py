@@ -1,6 +1,11 @@
-def evaluate_all_predictions(results):
-    ground_truth = [res[0][0] for res in results]
-    best_pred = [res[1][0] for res in results]
+from evaluation.compute_rmsd import evaluate_all_rmsds
+from torch_geometric.data import HeteroData
+
+
+def evaluate_all_predictions(
+    results: list[tuple[HeteroData, float]], ground_truth: tuple[HeteroData, float]
+):
+    best_pred = results[0][0]
     meter = evaluate_all_rmsds(ground_truth, best_pred)
     _ = meter.summarize()
     return meter

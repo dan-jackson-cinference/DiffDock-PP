@@ -1,7 +1,7 @@
+from __future__ import annotations
 import os
 import pickle
 from abc import ABC, abstractmethod
-from typing import Self
 
 import dill
 import pandas as pd
@@ -34,7 +34,7 @@ class DataReader(ABC):
         raise NotImplementedError
 
     @classmethod
-    def from_config(cls, cfg: DataCfg) -> Self:
+    def from_config(cls, cfg: DataCfg) -> DataReader:
         return cls(cfg.data_root_dir, cfg.data_file, cfg.recache, cfg.debug)
 
     def load_data(self):
@@ -158,6 +158,11 @@ class SinglePairReader(DataReader):
         self.pdb_id = pdb_id
         self.receptor_path = receptor_path
         self.ligand_path = ligand_path
+
+    @classmethod
+    def from_config(cls, cfg: DataCfg) -> DataReader:
+        pred_cfg = cfg.pred_cfg
+        return cls(str(pred_cfg.pdb_id), pred_cfg.receptor_path, pred_cfg.ligand_path)
 
     def load_data(self):
         return self.read_files()

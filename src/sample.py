@@ -5,16 +5,17 @@
 import copy
 import os
 from typing import Optional
-
+from tqdm import tqdm
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as R
-from torch import Tensor
+from torch import Tensor, device
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataListLoader, DataLoader
 
 from config import TempCfg
 from data.protein import PPComplex
+from data.dataset import BindingDataset, SamplingDataset
 from geom_utils import set_time
 from geom_utils.transform import NoiseTransform
 from model.model import ScoreModel
@@ -292,6 +293,7 @@ class Sampler:
         batch_size: int,
         no_final_noise: bool,
         no_random: bool,
+        device: device,
     ):
         self.score_model = score_model
         self.noise_transform = noise_transform
@@ -299,81 +301,101 @@ class Sampler:
         self.batch_size = batch_size
         self.no_final_noise = no_final_noise
         self.no_random = no_random
+        self.device = device
 
     def sample(
         self,
-        initial_positions: list[HeteroData],
+        initial_positions: SamplingDataset,
         ode: bool,
         temp_cfg: Optional[TempCfg] = None,
-    ):
+    ) -> list[SamplingDataset]:
         time_steps = self.get_time_steps()
-        samples: list[list[HeteroData]] = [initial_positions]
+        samples: list[SamplingDataset] = [initial_positions]
 
-        for t_idx in range(self.num_steps):
+        for t_idx in tqdm(range(self.num_steps)):
             cur_t = time_steps[t_idx]
             if t_idx == self.num_steps - 1:
                 dt = cur_t
             else:
                 dt = cur_t - time_steps[t_idx + 1]
 
-            self.sample_step(cur_t, dt, t_idx, samples[-1], ode, temp_cfg)
+            new_samples = self.sample_step(cur_t, dt, t_idx, samples[-1], ode, temp_cfg)
+            # print(new_samples)
+            samples.append(SamplingDataset(new_samples))
+
+        return samples
 
     def sample_step(
         self,
         t: float,
         dt: float,
         idx: int,
-        list_of_graphs: list[HeteroData],
+        graph_dataset: SamplingDataset,
         ode: bool,
         temp_cfg: Optional[TempCfg],
-    ) -> HeteroData:
+    ) -> list[HeteroData]:
+        for graph in graph_dataset:
+            set_time(graph, t, t, t, 1, self.device)
+
         dataloader = DataLoader(
-            list_of_graphs, batch_size=self.batch_size, shuffle=False
+            graph_dataset, batch_size=self.batch_size, shuffle=False
         )
-        with torch.no_grad():
-            for batch_of_graphs in dataloader:
+
+        all_new_graphs: list[HeteroData] = []
+        for batch_of_graphs in dataloader:
+            batch_of_graphs = batch_of_graphs.cuda(0)
+            with torch.no_grad():
                 outputs = self.score_model(batch_of_graphs)
-        tr_score = outputs["tr_pred"].cpu()
-        rot_score = outputs["rot_pred"].cpu()
-        tor_score = outputs["tor_pred"].cpu()
+            tr_score = outputs["tr_pred"].cpu()
+            rot_score = outputs["rot_pred"].cpu()
+            tor_score = outputs["tor_pred"].cpu()
 
-        # translation gradient (?)
-        tr_s, rot_s, tor_s = self.noise_transform.noise_schedule(t, t, t)
-        tr_g = tr_s * self.noise_transform.noise_schedule.tr_scale
+            # translation gradient (?)
+            tr_s, rot_s, tor_s = self.noise_transform.noise_schedule(t, t, t)
+            tr_g = tr_s * self.noise_transform.noise_schedule.tr_scale
 
-        # rotation gradient (?)
-        rot_g = 2 * rot_s * self.noise_transform.noise_schedule.rot_scale
+            # rotation gradient (?)
+            rot_g = 2 * rot_s * self.noise_transform.noise_schedule.rot_scale
 
-        tr_z, rot_z = self.trz_rotz(idx)
-        if ode:
-            tr_update, rot_update = self.ode_update(
-                dt, tr_g, rot_g, tr_score, rot_score
-            )
-        elif temp_cfg is not None:
-            tr_update, rot_update = self.sample_temp(
-                dt,
-                tr_s,
-                tr_g,
-                tr_z,
-                tr_score,
-                rot_s,
-                rot_g,
-                rot_z,
-                rot_score,
-                temp_cfg.temp_sampling,
-                temp_cfg.temp_psi,
-                temp_cfg.temp_sigma_data_tr,
-                temp_cfg.temp_sigma_data_rot,
-            )
-        else:
-            tr_update, rot_update = self.update(
-                dt, tr_z, rot_z, tr_g, rot_g, tr_score, rot_score
-            )
+            tr_z, rot_z = self.trz_rotz(idx)
+            if ode:
+                tr_update, rot_update = self.ode_update(
+                    dt, tr_g, rot_g, tr_score, rot_score
+                )
+            elif temp_cfg is not None:
+                tr_update, rot_update = self.sample_temp(
+                    dt,
+                    tr_s,
+                    tr_g,
+                    tr_z,
+                    tr_score,
+                    rot_s,
+                    rot_g,
+                    rot_z,
+                    rot_score,
+                    temp_cfg.temp_sampling,
+                    temp_cfg.temp_psi,
+                    temp_cfg.temp_sigma_data_tr,
+                    temp_cfg.temp_sigma_data_rot,
+                )
+            else:
+                tr_update, rot_update = self.update(
+                    dt, tr_z, rot_z, tr_g, rot_g, tr_score, rot_score
+                )
 
-        new_graph = self.noise_transform.apply_updates(
-            graph, tr_update, rot_update.squeeze(0)
-        )
-        return new_graph
+            # apply transformations
+            graph_list = batch_of_graphs.to("cpu").to_data_list()
+            new_graphs = [
+                self.noise_transform.apply_updates(
+                    data, tr_update[i : i + 1], rot_update[i : i + 1].squeeze(0), None
+                )
+                for i, data in enumerate(graph_list)
+            ]
+            all_new_graphs.extend(new_graphs)
+        # new_graph = self.noise_transform.apply_updates(
+        #     graph_dataset, tr_update, rot_update.squeeze(0)
+        # )
+        return all_new_graphs
 
     def get_time_steps(self):
         return np.linspace(1, 0, self.num_steps + 1)[:-1]

@@ -1,5 +1,5 @@
 import copy
-from typing import Optional, Type
+from typing import Optional, Type, Any
 
 import torch
 from torch_geometric.data import Dataset
@@ -7,12 +7,8 @@ from torch_geometric.data import Dataset
 # from torch.utils.data import Dataset, DataLoader
 from torch_geometric.loader import DataListLoader, DataLoader
 
-from config import DataCfg
 from data.dataset import BindingDataset, RandomizedConfidenceDataset
-from data.preprocessing import (
-    PROCESSORS,
-    PPDataSet,
-    PreProcessor,
+from data.process_data import (
     crossval_split,
     split_data,
     split_into_folds,

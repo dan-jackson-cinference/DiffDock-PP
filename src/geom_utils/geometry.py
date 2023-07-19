@@ -6,9 +6,10 @@ except for code formatting via Black
 import math
 
 import torch
+from torch import Tensor
 
 
-def quaternion_to_matrix(quaternions):
+def quaternion_to_matrix(quaternions: Tensor):
     """
     From https://pytorch3d.readthedocs.io/en/latest/_modules/pytorch3d/transforms/rotation_conversions.html
     Convert rotations given as quaternions to rotation matrices.
@@ -40,7 +41,7 @@ def quaternion_to_matrix(quaternions):
     return o.reshape(quaternions.shape[:-1] + (3, 3))
 
 
-def axis_angle_to_quaternion(axis_angle):
+def axis_angle_to_quaternion(axis_angle: Tensor):
     """
     From https://pytorch3d.readthedocs.io/en/latest/_modules/pytorch3d/transforms/rotation_conversions.html
     Convert rotations given as axis/angle to quaternions.
@@ -73,7 +74,7 @@ def axis_angle_to_quaternion(axis_angle):
     return quaternions
 
 
-def axis_angle_to_matrix(axis_angle):
+def axis_angle_to_matrix(axis_angle: Tensor):
     """
     From https://pytorch3d.readthedocs.io/en/latest/_modules/pytorch3d/transforms/rotation_conversions.html
     Convert rotations given as axis/angle to rotation matrices.
@@ -127,4 +128,3 @@ def kabsch_torch(A, B):
 
     t = -R @ centroid_A + centroid_B
     return R, t
-

@@ -1,26 +1,20 @@
 import torch
-from torch import nn
+from torch import Tensor, device, nn
+from torch_geometric.loader import DataLoader
+from tqdm import tqdm
+from geom_utils import set_time
 
 
-def evaluate_confidence(model: nn.Module, loader: DataLoader, args):
-    all_confidences = []
-    all_confidences_with_name = {}
-
+def evaluate_confidence(
+    model: nn.Module, loader: DataLoader, device: device, num_gpu: int = 1
+) -> list[float]:
     model.eval()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    all_labels = []
-    all_pred = []
-    all_loss = []
+    all_pred: list[Tensor] = []
     print("loader len: ", len(loader))
     for data in tqdm(loader, total=len(loader)):
-        # data, rmsd = batch
-        # move to CUDA
-
-        if args.num_gpu == 1 and torch.cuda.is_available():
+        if num_gpu == 1 and torch.cuda.is_available():
             data = data.cuda()
-            set_time(data, 0, 0, 0, batch_size=args.batch_size, device=device)
+            set_time(data, 0, 0, 0, batch_size=loader.batch_size, device=device)
         try:
             with torch.no_grad():
                 pred = model(data)
@@ -37,6 +31,6 @@ def evaluate_confidence(model: nn.Module, loader: DataLoader, args):
                 continue
             raise err
 
-    all_pred = torch.cat(all_pred).tolist()  # TODO -> maybe list inside
+    all_pred: list[float] = torch.cat(all_pred).tolist()  # TODO -> maybe list inside
 
     return all_pred

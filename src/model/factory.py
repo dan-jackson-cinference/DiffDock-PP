@@ -1,11 +1,9 @@
 import glob
 import os
 from typing import Optional
-
-from torch import nn
 from torch_geometric.nn.data_parallel import DataParallel
 
-from config import DiffusionCfg, E3NNCfg
+from config import BaseModelCfg, DiffusionCfg
 from geom_utils.transform import NoiseSchedule
 from model.diffusion import TensorProductScoreModel
 from model.losses import DiffusionLoss
@@ -16,10 +14,10 @@ from .model import ConfidenceModel, ScoreModel
 
 def load_score_model(
     diffusion_cfg: DiffusionCfg,
-    e3nn_cfg: E3NNCfg,
+    cfg: BaseModelCfg,
     noise_schedule: NoiseSchedule,
     score_model_path: Optional[str],
-    dropout: float,
+    lm_embed_dim: int,
     num_atoms: int,
     num_gpu: int,
     fold: int,
@@ -32,7 +30,7 @@ def load_score_model(
     """
 
     encoder = TensorProductScoreModel.from_config(
-        e3nn_cfg, noise_schedule, dropout, num_atoms, confidence_mode=False
+        cfg, noise_schedule, lm_embed_dim, num_atoms, confidence_mode=False
     )
     loss = DiffusionLoss.from_config(diffusion_cfg, noise_schedule, num_gpu)
     model = ScoreModel(loss, encoder)
@@ -43,10 +41,10 @@ def load_score_model(
 
 
 def load_confidence_model(
-    e3nn_cfg: E3NNCfg,
+    cfg: BaseModelCfg,
     noise_schedule: NoiseSchedule,
     filtering_model_path: Optional[str],
-    dropout: float,
+    lm_embed_dim: int,
     num_atoms: int,
     fold: int,
     load_best: bool = True,
@@ -54,7 +52,7 @@ def load_confidence_model(
 ) -> ConfidenceModel:
     # load model with specified arguments
     encoder = TensorProductScoreModel.from_config(
-        e3nn_cfg, noise_schedule, dropout, num_atoms, confidence_mode=True
+        cfg, noise_schedule, lm_embed_dim, num_atoms, confidence_mode=True
     )
     model = ConfidenceModel(encoder)
     checkpoint = get_checkpoint(filtering_model_path, checkpoint_path, fold, load_best)

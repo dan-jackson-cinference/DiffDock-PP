@@ -2,18 +2,17 @@ from dataclasses import dataclass
 from typing import Type
 
 from config import DataCfg
-from data.preprocessing import (
+from data.process_data import (
     DB5Processor,
     DIPSProcessor,
-    PreProcessor,
-    SabDabProcessor,
+    PPDataSet,
+    DataProcessor,
     SinglePairProcessor,
 )
 from data.read_data import (
     DataReader,
     DB5Reader,
     DIPSReader,
-    SabDabReader,
     SinglePairReader,
 )
 
@@ -28,32 +27,38 @@ class DatasetError(Exception):
 
 
 @dataclass
-class DataProcessor:
+class DataPipeline:
     data_reader: DataReader
-    data_processor: PreProcessor
+    data_processor: DataProcessor
 
 
 @dataclass
-class DataProcessingFactory:
+class DataPipelineFactory:
     data_reader_class: Type[DataReader]
-    data_processor_class: Type[PreProcessor]
+    data_processor_class: Type[DataProcessor]
 
-    def __call__(self, data_cfg: DataCfg, lm_embed_dim: int) -> DataProcessor:
-        return DataProcessor(
+    def __call__(
+        self, root_dir: str, data_cfg: DataCfg, lm_embed_dim: int
+    ) -> DataPipeline:
+        return DataPipeline(
             self.data_reader_class.from_config(data_cfg),
-            self.data_processor_class.from_config(data_cfg, lm_embed_dim, debug=False),
+            self.data_processor_class.from_config(
+                root_dir, data_cfg, lm_embed_dim, debug=False
+            ),
         )
 
 
 FACTORIES = {
-    "single_pair": DataProcessingFactory(SinglePairReader, SinglePairProcessor),
-    "dips": DataProcessingFactory(DIPSReader, DIPSProcessor),
-    "db5": DataProcessingFactory(DB5Reader, DB5Processor),
+    "single_pair": DataPipelineFactory(SinglePairReader, SinglePairProcessor),
+    "dips": DataPipelineFactory(DIPSReader, DIPSProcessor),
+    "db5": DataPipelineFactory(DB5Reader, DB5Processor),
     # "sabdab": DataProcessingFactory(SabDabReader, SabDabProcessor),
 }
 
 
-def load_data(data_cfg: DataCfg, lm_embed_dim: int):
+def load_data(
+    root_dir: str, data_cfg: DataCfg, lm_embed_dim: int
+) -> tuple[PPDataSet, dict[str, int]]:
     """
     Split the data before processing all of it?
     """
@@ -63,9 +68,9 @@ def load_data(data_cfg: DataCfg, lm_embed_dim: int):
     except KeyError as err:
         raise DatasetError(f"dataset '{data_cfg.dataset}' not found") from err
 
-    processor = data_factory(data_cfg, lm_embed_dim)
+    processor = data_factory(root_dir, data_cfg, lm_embed_dim)
 
     raw_data = processor.data_reader.load_data()
-    processed_data, data_params = processor.data_processor.process_data(raw_data)
+    processed_data, data_params = processor.data_processor.process(raw_data)
 
     return processed_data, data_params

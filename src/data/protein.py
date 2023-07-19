@@ -1,15 +1,21 @@
+from __future__ import annotations
 from dataclasses import dataclass, field
-from enum import StrEnum
-from typing import Optional, Self
+from enum import Enum
+from typing import Optional
+
 
 import torch
 from Bio.PDB import PDBParser, Structure
+from Bio.PDB import Atom as BioAtom
 from torch import Tensor
 from torch_cluster import knn_graph
 from torch_geometric.data import HeteroData
 
+# from data.pdb import PDB_LINE
+PDB_LINE = "ATOM  {:>5}  {:<3} {} {} {:>3}    {:>8.3f}{:>8.3f}{:>8.3f}  1.00  0.00           {}\n"
 
-class AminoAcid(StrEnum):
+
+class AminoAcid(Enum):
     ALA = "ALA"
     ARG = "ARG"
     ASN = "ASN"
@@ -56,50 +62,51 @@ amino_acid_symbols = {
 }
 
 
-class Element(StrEnum):
+class Element(Enum):
     HYDROGEN = "H"
     CARBON = "C"
     NITROGEN = "N"
     OXYGEN = "O"
     SULPHUR = "S"
+    PHOSPHOROUS = "P"
 
 
 @dataclass
 class Atom:
     name: str
-    element: Element
+    serial_number: int
+    amino_acid: AminoAcid
+    chain: str
+    res_idx: int
     pos: Tensor
+    element: Element
     charge: Optional[float] = None
     beta: Optional[float] = None
 
     @classmethod
-    def construct_atom(cls, atom) -> Self:
+    def construct_atom(
+        cls, atom: BioAtom, chain: str, res_idx: int, residue: str
+    ) -> Atom:
         pos = torch.from_numpy(atom.get_coord())
         name = atom.get_name()
+        amino_acid = AminoAcid(residue)
+        serial_number = atom.serial_number
         element = atom.element
-        return cls(name=name, element=Element(element), pos=pos)
-
-
-@dataclass
-class Residue:
-    name: AminoAcid
-    idx: int
-    atoms: list[Atom]
-
-    @classmethod
-    def construct_residue(cls, residue, idx: int, atoms: list[Atom]) -> Self:
-        name = AminoAcid(residue.get_resname())
-        return cls(name, idx, atoms)
-
-    @property
-    def elements(self) -> list[Element]:
-        return [atom.element for atom in self.atoms]
+        return cls(
+            name,
+            serial_number,
+            amino_acid,
+            chain,
+            res_idx,
+            pos,
+            element=Element(element),
+        )
 
 
 @dataclass
 class Protein:
-    sequence: list[Residue] = field(default_factory=list)
-    filtered_sequence: list[Residue] = field(default_factory=list)
+    sequence: list[Atom] = field(default_factory=list)
+    filtered_sequence: list[Atom] = field(default_factory=list)
     tokenized_sequence: list[int] = field(default_factory=list)
     n_i_feat: Optional[Tensor] = None
     u_i_feat: Optional[Tensor] = None
@@ -108,8 +115,11 @@ class Protein:
     def __len__(self):
         return len(self.sequence)
 
-    def append(self, residue: Residue) -> None:
-        self.sequence.append(residue)
+    def __getitem__(self, idx: int):
+        return self.sequence[idx]
+
+    def append(self, atom: Atom) -> None:
+        self.sequence.append(atom)
 
     @property
     def sequence_names(self) -> list[AminoAcid]:
@@ -117,62 +127,59 @@ class Protein:
 
     @property
     def sequence_str(self) -> str:
-        return "".join([amino_acid_symbols[residue.name] for residue in self.sequence])
+        return "".join([amino_acid_symbols[atom.amino_acid] for atom in self.sequence])
 
     @property
     def filtered_sequence_names(self) -> list[AminoAcid]:
-        return [residue.name for residue in self.filtered_sequence]
+        return [atom.amino_acid for atom in self.filtered_sequence]
 
     @property
     def filtered_sequence_str(self) -> str:
         return "".join(
-            [amino_acid_symbols[residue.name] for residue in self.filtered_sequence]
+            [amino_acid_symbols[atom.amino_acid] for atom in self.filtered_sequence]
         )
 
     @property
     def all_elements(self) -> list[Element]:
-        return [element for residue in self.sequence for element in residue.elements]
+        return [atom.element for atom in self.sequence]
 
     @property
     def filtered_elements(self) -> list[Element]:
-        return [
-            element
-            for residue in self.filtered_sequence
-            for element in residue.elements
-        ]
+        return [atom.element for atom in self.filtered_sequence]
 
     @classmethod
-    def make_protein(cls, structure: Structure.Structure) -> Self:
+    def make_protein(cls, structure: Structure.Structure) -> Protein:
         protein = cls()
-        residues = structure.get_residues()
-        for i, residue in enumerate(residues):
-            atoms = [Atom.construct_atom(atom) for atom in residue]
-            res = Residue.construct_residue(residue, i, atoms)
-            protein.append(res)
+        for chain in structure.get_chains():
+            chain_id = chain.id
+            for residue in chain.get_residues():
+                if residue.id[0] == " ":
+                    for atom in residue:
+                        protein.append(
+                            Atom.construct_atom(
+                                atom, chain_id, residue.id[1], residue.get_resname()
+                            )
+                        )
 
         return protein
 
     @property
     def all_positions(self) -> Tensor:
-        positions = [atom.pos for residue in self.sequence for atom in residue.atoms]
+        positions = [atom.pos for atom in self.sequence]
         return torch.stack(positions)
 
     @property
     def filtered_positions(self) -> Tensor:
-        positions = [
-            atom.pos for residue in self.filtered_sequence for atom in residue.atoms
-        ]
+        positions = [atom.pos for atom in self.filtered_sequence]
         return torch.stack(positions)
 
-    def filter(self, atoms_to_keep: list[str]) -> None:
-        for residue in self.sequence:
-            self.filtered_sequence.append(
-                Residue(
-                    residue.name,
-                    residue.idx,
-                    [atom for atom in residue.atoms if atom.name not in atoms_to_keep],
-                )
-            )
+    def filter(self, atoms_to_keep: Optional[list[str]]) -> None:
+        if atoms_to_keep is not None:
+            for atom in self.sequence:
+                if atom.name in atoms_to_keep:
+                    self.filtered_sequence.append(atom)
+        else:
+            self.filtered_sequence = self.sequence
 
     def compute_orientation_vectors(
         self,
@@ -215,6 +222,32 @@ class Protein:
             tokenizer[element] for element in self.filtered_elements
         ]
 
+    def update(self, new_positions: Tensor):
+        i = 0
+        for atom in self.filtered_sequence:
+            atom.pos = new_positions[i]
+            i += 1
+
+    def write_to_pdb(self, file_path: str) -> None:
+        lines: list[str] = []
+        for atom in self.filtered_sequence:
+            lines.append(
+                PDB_LINE.format(
+                    atom.serial_number,
+                    atom.name,
+                    atom.amino_acid.value,
+                    atom.chain,
+                    atom.res_idx,
+                    atom.pos[0],
+                    atom.pos[1],
+                    atom.pos[2],
+                    atom.element.value,
+                )
+            )
+
+        with open(file_path, "a") as file:
+            file.writelines(lines)
+
 
 @dataclass
 class PPComplex:
@@ -229,7 +262,9 @@ class PPComplex:
         # retrieve position and compute kNN
         for protein, name in zip([self.receptor, self.ligand], ["receptor", "ligand"]):
             self.graph[name].pos = protein.filtered_positions.float()
-            self.graph[name].x = protein.filtered_sequence  # _seq is residue id
+            self.graph[name].x = [
+                atom.amino_acid for atom in protein.filtered_sequence
+            ]  # _seq is residue id
             if use_orientation_features:
                 self.graph[name].n_i_feat = protein.n_i_feat.float()
                 self.graph[name].u_i_feat = protein.u_i_feat.float()
@@ -243,6 +278,19 @@ class PPComplex:
             self.graph[key].pos = self.graph[key].pos - center
         self.graph.center = center  # save old center
 
+    def update_proteins_from_graph(self, graph: HeteroData) -> None:
+        self.graph = graph
+        self.receptor.update(graph["receptor"].pos)
+        self.ligand.update(graph["ligand"].pos)
+
+    def write_to_pdb(
+        self, rec_file_path: str, lig_file_path: Optional[str] = None
+    ) -> None:
+        self.receptor.write_to_pdb(rec_file_path)
+        if lig_file_path is None:
+            lig_file_path = rec_file_path
+        self.ligand.write_to_pdb(lig_file_path)
+
 
 def parse_pdb(file: str, name: str) -> Protein:
     pdb_parser = PDBParser()
@@ -252,18 +300,23 @@ def parse_pdb(file: str, name: str) -> Protein:
 
 
 if __name__ == "__main__":
-    file = "/Users/danieljackson/target.pdb"
-    test_protein = parse_pdb(file, "test")
-
-    # print(getattr(test_protein, ("sequence_names")))
-
-    # print([residue.elements for residue in test_protein.sequence])
-
-    tokenizer = {"C": 1, "N": 2, "O": 3, "S": 4, "H": 5}
-
-    # test_protein.tokenize_sequence(tokenizer)
-    # print(test_protein.tokenized_sequence)
-
-    print(
-        [element for residue in test_protein.sequence for element in residue.elements]
-    )
+    pdb_parser = PDBParser()
+    # lig_file = "datasets/single_pair_dataset/structures/1A2K_l_b.pdb"
+    rec_file = "datasets/single_pair_dataset/structures/1A2K_r_b.pdb"
+    # lig_structure = pdb_parser.get_structure("test", lig_file)
+    rec_structure = pdb_parser.get_structure("test", rec_file)
+    # test = structure.get_atoms()
+    # for atom in test:
+    #     print(atom.serial_number)
+    #     break
+    # ligand = Protein.make_protein(lig_structure)
+    receptor = Protein.make_protein(rec_structure)
+    receptor.filter(None)
+    receptor.write_to_pdb("test_pdb.pdb")
+    print(receptor[0])
+    # ligand.filter(["CA"])
+    # receptor.filter(["CA"])
+    # binding_complex = PPComplex("1", receptor, ligand)
+    # binding_complex.populate_graph(False, 20)
+    # print(len(binding_complex.graph["receptor"].x))
+    # print(binding_complex.graph["receptor"].pos.shape)

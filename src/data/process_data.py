@@ -1,9 +1,11 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
 import os
 import pickle
 import random
 import warnings
-from typing import Any, Self
+from typing import Any
+
 
 import Bio
 import Bio.PDB
@@ -19,13 +21,15 @@ warnings.filterwarnings("ignore", category=Bio.PDB.PDBExceptions.PDBConstruction
 
 from utils import printt
 
+DATA_CACHE_VERSION = "v2"
+
 PPDataSet = dict[str, PPComplex]
 
 
-ATOMS_TO_KEEP = {"atom": [], "backbone": ["N", "CA", "O", "CB"], "residue": ["CA"]}
+ATOMS_TO_KEEP = {"atom": None, "backbone": ["N", "CA", "O", "CB"], "residue": ["CA"]}
 
 
-class PreProcessor(ABC):
+class DataProcessor(ABC):
     """
     Base preprocessing class
     @param (bool) data  default=True to load complexes, not poses
@@ -33,6 +37,7 @@ class PreProcessor(ABC):
 
     def __init__(
         self,
+        root_dir: str,
         data_file: str,
         resolution: str,
         no_graph_cache: bool,
@@ -41,8 +46,8 @@ class PreProcessor(ABC):
         knn_size: int,
         lm_embed_dim: int,
         debug: bool = False,
+        cache_dir: str = "cache",
     ):
-        
         self.resolution = resolution
         self.no_graph_cache = no_graph_cache
         self.use_orientation_features = use_orientation_features
@@ -50,6 +55,9 @@ class PreProcessor(ABC):
         self.recache = recache
         self.lm_embed_dim = lm_embed_dim
         self.knn_size = knn_size
+        self.cache_dir = os.path.join(root_dir, cache_dir)
+        if not os.path.isdir(self.cache_dir):
+            os.mkdir(self.cache_dir)
 
         # cache for post-processed data, optional
         self.graph_cache = data_file.replace(".csv", f"_graph_{self.resolution}.pkl")
@@ -73,9 +81,9 @@ class PreProcessor(ABC):
         self.tokenizer = self.alphabet.get_batch_converter()
 
     @abstractmethod
-    def process(self, data: PPDataSet):
+    def process(self, data: PPDataSet) -> tuple[PPDataSet, dict[str, int]]:
         raise NotImplementedError
-    
+
     def extract_coords(self, protein: Protein) -> dict[str, list[Tensor]]:
         """
         Extract coordinates of CA, N, and C atoms that are needed
@@ -84,17 +92,17 @@ class PreProcessor(ABC):
         @return c_alpha_coords, n_coords, c_coords (all torch.Tensor)
         """
         coords: dict[str, list[Tensor]] = {"CA": [], "N": [], "C": []}
-        for residue in protein.sequence:
-            for atom in residue.atoms:
-                if atom.name in coords:
-                    coords[atom.name].append(atom.pos)
+        for atom in protein.sequence:
+            if atom.name in coords:
+                coords[atom.name].append(atom.pos)
 
         assert len(coords["CA"]) == len(coords["N"]) == len(coords["C"])
 
         return coords
 
-    def process_data(
-        self, ppi_data: PPDataSet,
+    def preprocess_data(
+        self,
+        ppi_data: PPDataSet,
     ) -> tuple[PPDataSet, dict[str, Any]]:
         """
         Tokenize, etc.
@@ -144,8 +152,8 @@ class PreProcessor(ABC):
             printt("finished tokenizing residues with ESM")
         else:
             # tokenize residues for non-ESM
-            tokenizer = tokenize(ppi_data.values(), "receptor_seq")
-            tokenize(ppi_data.values(), "ligand_seq", tokenizer)
+            tokenizer = tokenize(ppi_data.values())
+            tokenize(ppi_data.values(), tokenizer)
             self.esm_model = None
             data_params["num_residues"] = len(tokenizer)
             data_params["tokenizer"] = tokenizer
@@ -153,8 +161,12 @@ class PreProcessor(ABC):
 
         #### protein sequence tokenization
         # tokenize atoms
-        atom_tokenizer = tokenize([pp_complex.receptor for pp_complex in ppi_data.values()])
-        tokenize([pp_complex.ligand for pp_complex in ppi_data.values()], atom_tokenizer)
+        atom_tokenizer = tokenize(
+            [pp_complex.receptor for pp_complex in ppi_data.values()]
+        )
+        tokenize(
+            [pp_complex.ligand for pp_complex in ppi_data.values()], atom_tokenizer
+        )
         data_params["atom_tokenizer"] = atom_tokenizer
         printt("finished tokenizing all inputs")
 
@@ -165,6 +177,8 @@ class PreProcessor(ABC):
         Pre-compute ESM2 embeddings.
         """
         # check if we already computed embeddings
+        print(self.esm_cache)
+        print(os.path.exists(self.esm_cache))
         if os.path.exists(self.esm_cache):
             with open(self.esm_cache, "rb") as file:
                 path_to_rep = pickle.load(file)
@@ -173,18 +187,14 @@ class PreProcessor(ABC):
             return ppi_data
 
         printt("Computing ESM embeddings")
-
-        # convert to 3 letter codes
-        # aa_code = defaultdict(lambda: "<unk>")
-        # aa_code.update({k.upper(): v for k, v in protein_letters_3to1.items()})
         # fix ordering
         all_pdbs = sorted(ppi_data)
 
         rec_seqs: list[str] = []
         lig_seqs: list[str] = []
         for pp_complex in ppi_data.values():
-            rec_seqs.append(pp_complex.receptor.sequence_str)
-            lig_seqs.append(pp_complex.ligand.sequence_str)
+            rec_seqs.append(pp_complex.receptor.filtered_sequence_str)
+            lig_seqs.append(pp_complex.ligand.filtered_sequence_str)
 
         # batchify sequences
         rec_batches = self._esm_batchify(rec_seqs)
@@ -195,6 +205,7 @@ class PreProcessor(ABC):
 
         # dump to cache
         path_to_rep: dict[str, tuple[Tensor, Tensor]] = {}
+
         for idx, pdb in enumerate(all_pdbs):
             # cat one-hot representation and ESM embedding
             rec_graph_x = torch.cat([rec_reps[idx][0], rec_reps[idx][1]], dim=1)
@@ -253,20 +264,33 @@ class PreProcessor(ABC):
         Assign new ESM representation to graph.x
         """
         for pdb, (rec_rep, lig_rep) in path_to_rep.items():
-            rec_graph = ppi_data[pdb].graph.["receptor"]
-            lig_graph = ppi_data[pdb].graph.["ligand"]
+            rec_graph = ppi_data[pdb].graph["receptor"]
+            lig_graph = ppi_data[pdb].graph["ligand"]
             rec_graph.x = rec_rep
             lig_graph.x = lig_rep
+
             assert len(rec_graph.pos) == len(rec_graph.x)
             assert len(lig_graph.pos) == len(lig_graph.x)
         return ppi_data
-    
+
     @classmethod
-    def from_config(cls, cfg: DataCfg, lm_embed_dim: int, debug: bool) -> Self:
-        return cls(cfg.data_file, cfg.resolution, cfg.no_graph_cache, cfg.use_orientation_features, cfg.recache, cfg.knn_size, lm_embed_dim, debug)
+    def from_config(
+        cls, root_dir: str, cfg: DataCfg, lm_embed_dim: int, debug: bool
+    ) -> DataProcessor:
+        return cls(
+            root_dir,
+            cfg.data_file,
+            cfg.resolution,
+            cfg.no_graph_cache,
+            cfg.use_orientation_features,
+            cfg.recache,
+            cfg.knn_size,
+            lm_embed_dim,
+            debug,
+        )
 
 
-class DIPSProcessor(PreProcessor):
+class DIPSProcessor(DataProcessor):
     def __init__(
         self,
         data_file: str,
@@ -276,12 +300,21 @@ class DIPSProcessor(PreProcessor):
         recache: bool,
         knn_size: int,
         lm_embed_dim: int,
-        debug: bool
+        debug: bool,
     ):
-        super().__init__(data_file, resolution, no_graph_cache, use_orientation_features, recache, knn_size, lm_embed_dim, debug)
+        super().__init__(
+            data_file,
+            resolution,
+            no_graph_cache,
+            use_orientation_features,
+            recache,
+            knn_size,
+            lm_embed_dim,
+            debug,
+        )
 
         self.lm_embed_dim = lm_embed_dim
-   
+
     def assign_receptor(self, data: PPDataSet):
         """
         For docking, we assigned smaller protein as ligand
@@ -296,18 +329,16 @@ class DIPSProcessor(PreProcessor):
                 item["ligand"] = rec
         return data
 
-
     def process(self, data: PPDataSet):
         data = self.assign_receptor(data)
-        data, data_params = self.process_data(data)
+        data, data_params = self.preprocess_data(data)
         data, data_params = self.process_embed(data, data_params)
         #### pre-compute ESM embeddings if needed
         printt(len(data), "entries loaded")
         return data, data_params
 
 
-
-class DB5Processor(PreProcessor):
+class DB5Processor(DataProcessor):
     """
     Docking benchmark 5.5
     """
@@ -322,8 +353,7 @@ class DB5Processor(PreProcessor):
         knn_size: int,
         lm_embed_dim: int,
         debug: bool,
-        use_unbound: bool
-
+        use_unbound: bool,
     ):
         super().__init__(
             data_file,
@@ -333,7 +363,7 @@ class DB5Processor(PreProcessor):
             recache,
             knn_size,
             lm_embed_dim,
-            debug
+            debug,
         )
         # cache file dependent on use_unbound
         if use_unbound:
@@ -346,13 +376,13 @@ class DB5Processor(PreProcessor):
             self.esm_cache = self.esm_cache.replace(".pkl", "_b.pkl")
 
     def process(self, data: PPDataSet):
-        ppi_data, data_params = self.process_data(data)
+        ppi_data, data_params = self.preprocess_data(data)
         ppi_data, data_params = self.process_embed(ppi_data, data_params)
         printt(len(ppi_data), "entries loaded")
         return ppi_data, data_params
 
 
-class SabDabProcessor(PreProcessor):
+class SabDabProcessor(DataProcessor):
     """
     Structure Antibody Database
     Downloaded May 2, 2022.
@@ -367,21 +397,31 @@ class SabDabProcessor(PreProcessor):
         recache: bool,
         knn_size: int,
         lm_embed_dim: int,
-        debug: bool
+        debug: bool,
     ):
-        super().__init__(data_file, resolution, no_graph_cache, use_orientation_features, recache, knn_size, lm_embed_dim, debug)
+        super().__init__(
+            data_file,
+            resolution,
+            no_graph_cache,
+            use_orientation_features,
+            recache,
+            knn_size,
+            lm_embed_dim,
+            debug,
+        )
 
     def process(self, data: PPDataSet):
-        data, data_params = self.process_data(data)
+        data, data_params = self.preprocess_data(data)
         data, data_params = self.process_embed(data, data_params)
         #### pre-compute ESM embeddings if needed
         printt(len(data), "entries loaded")
         return data, data_params
 
 
-class SinglePairProcessor(PreProcessor):
+class SinglePairProcessor(DataProcessor):
     def __init__(
         self,
+        root_dir: str,
         data_file: str,
         resolution: str,
         no_graph_cache: bool,
@@ -389,13 +429,27 @@ class SinglePairProcessor(PreProcessor):
         recache: bool,
         knn_size: int,
         lm_embed_dim: int,
-        debug: bool
+        debug: bool,
     ):
-        super().__init__(data_file, resolution, no_graph_cache, use_orientation_features, recache, knn_size, lm_embed_dim, debug)
-
+        super().__init__(
+            root_dir,
+            data_file,
+            resolution,
+            no_graph_cache,
+            use_orientation_features,
+            recache,
+            knn_size,
+            lm_embed_dim,
+            debug,
+        )
+        self.data_cache = os.path.join(
+            self.cache_dir, f"test_data_cache_{DATA_CACHE_VERSION}.pkl"
+        )
+        self.esm_cache = os.path.join(self.cache_dir, "test_esm.pkl")
+        self.graph_cache = os.path.join(self.cache_dir, f"test_graph_{resolution}.pkl")
 
     def process(self, data: PPDataSet):
-        ppi_data, data_params = self.process_data(data)
+        ppi_data, data_params = self.preprocess_data(data)
         ppi_data, data_params = self.process_embed(ppi_data, data_params)
         printt(len(ppi_data), "entries loaded")
         return ppi_data, data_params
@@ -426,9 +480,10 @@ def split_into_folds(ppi_data: PPDataSet, num_folds: int) -> list[PPDataSet]:
 
 # ------ DATA COLLATION -------
 
+
 def split_data(raw_data: PPDataSet, num_folds: int) -> dict[str, PPDataSet]:
     """separate out train/test"""
-    
+
     data: dict[str, PPDataSet] = {"train": {}, "val": {}, "test": {}}
     ## if test split is pre-specified, split into train/test
     # otherwise, allocate all data to train for cross-validation
@@ -438,10 +493,11 @@ def split_data(raw_data: PPDataSet, num_folds: int) -> dict[str, PPDataSet]:
         else:
             data["train"] = raw_data
     return data
-    
 
 
-def crossval_split(split_data: dict[str, PPDataSet], fold_num: int, num_folds: int) -> dict[str, list[PPComplex]]:
+def crossval_split(
+    split_data: dict[str, PPDataSet], fold_num: int, num_folds: int
+) -> dict[str, list[PPComplex]]:
     """
     number of folds-way cross validation
     @return  dict: split -> [pdb_ids]
@@ -498,6 +554,3 @@ def find_largest_diviser_smaller_than(n: int, upper: int) -> int:
     while n % i != 0:
         i = i - 1
     return i
-
-
-
