@@ -2,7 +2,7 @@ import resource
 import time
 
 import hydra
-
+import os
 import torch
 
 from hydra.core.config_store import ConfigStore
@@ -33,6 +33,7 @@ def main(cfg: DiffDockCfg):
     """test mode: load up all replicates from checkpoint directory
     and evaluate by sampling from reverse diffusion process"""
     printt("Starting Inference")
+    print(cfg.run_cfg.experiment_root_dir)
     set_seed(cfg.training_cfg.seed)
     inf_cfg = cfg.inference_cfg
     log_cfg = cfg.logging_cfg
@@ -108,17 +109,6 @@ def main(cfg: DiffDockCfg):
     if inf_cfg.temp_cfg is not None:
         print(f"temp_sampling: {inf_cfg.temp_cfg.temp_sampling}")
 
-    processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].write_to_pdb(
-        f"{cfg.data_cfg.pred_cfg.pdb_id}_orig.pdb"
-    )
-
-    initial_positions = initialize_random_positions(
-        processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].graph,
-        cfg.run_cfg.num_samples,
-        cfg.diffusion_cfg.tr_s_max,
-        no_torsion=True,
-    )
-
     sampler = Sampler(
         score_model,
         noise_transform,
@@ -129,29 +119,46 @@ def main(cfg: DiffDockCfg):
         device=device,
     )
 
-    sampling_dataset = SamplingDataset(initial_positions)
-    samples = sampler.sample(sampling_dataset, inf_cfg.ode, inf_cfg.temp_cfg)
-    samples_loader = DataLoader(samples[-1], batch_size=cfg.run_cfg.num_samples)
-    confidence = evaluate_confidence(
-        confidence_model, samples_loader, device
-    )  # TODO -> maybe list inside
+    for pdb_id, pp_complex in processed_data.items():
+        printt(f"Sampling {pdb_id}")
+        pdb_dir = os.path.join(cfg.run_cfg.experiment_root_dir, "pdbs", pdb_id)
+        os.makedirs(pdb_dir, exist_ok=True)
+        pp_complex.receptor.write_to_pdb(
+            f"{os.path.join(pdb_dir, f'{pdb_id}_receptor.pdb')}"
+        )
+        pp_complex.ligand.write_to_pdb(
+            f"{os.path.join(pdb_dir, f'{pdb_id}_ligand.pdb')}"
+        )
+        initial_positions = initialize_random_positions(
+            pp_complex.graph,
+            cfg.run_cfg.num_samples,
+            cfg.diffusion_cfg.tr_s_max,
+            no_torsion=True,
+        )
 
-    print(confidence)
-    samples_list = [sample for sample in samples[-1]]
-    results = sorted(list(zip(samples_list, confidence)), key=lambda x: -x[1])
-    printt("Finished Complex!")
+        sampling_dataset = SamplingDataset(initial_positions)
+        samples = sampler.sample(sampling_dataset, inf_cfg.ode, inf_cfg.temp_cfg)
+        samples_loader = DataLoader(samples[-1], batch_size=cfg.run_cfg.num_samples)
+        confidence = evaluate_confidence(
+            confidence_model, samples_loader, device
+        )  # TODO -> maybe list inside
+
+        samples_list = [sample for sample in samples[-1]]
+        results = sorted(list(zip(samples_list, confidence)), key=lambda x: -x[1])
+        printt("Finished Complex!")
+
+        for i, (sample, confidence_val) in enumerate(
+            results[: cfg.run_cfg.save_top_n_samples]
+        ):
+            pp_complex.update_proteins_from_graph(sample)
+            pp_complex.write_to_pdb(
+                os.path.join(
+                    pdb_dir, f"{pdb_id}_sample_{i}_confidence_{confidence_val:.3f}.pdb"
+                )
+            )
 
     printt(f"Finished run {log_cfg.run_name}")
     print(f"Total time spent: {time.time()-start_time}")
-    print(results[0])
-
-    for i, (sample, confidence_val) in enumerate(results[:10]):
-        processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].update_proteins_from_graph(
-            sample
-        )
-        processed_data[str(cfg.data_cfg.pred_cfg.pdb_id)].write_to_pdb(
-            f"sample_{i}_confidence_{confidence_val:.3f}.pdb"
-        )
 
 
 if __name__ == "__main__":

@@ -121,7 +121,6 @@ class DataProcessor(ABC):
             for protein in [pp_complex.receptor, pp_complex.ligand]:
                 # select subset of residues that match desired resolution (e.g. residue-level vs. atom-level)
                 protein.filter(ATOMS_TO_KEEP[self.resolution])
-
                 # for orientation features we need coordinates of CA, N, and C atoms
                 # These coordinates define the local coordinate system of each residue
                 if self.use_orientation_features:
@@ -177,7 +176,6 @@ class DataProcessor(ABC):
         Pre-compute ESM2 embeddings.
         """
         # check if we already computed embeddings
-        print(self.esm_cache)
         print(os.path.exists(self.esm_cache))
         if os.path.exists(self.esm_cache):
             with open(self.esm_cache, "rb") as file:

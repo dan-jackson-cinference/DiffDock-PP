@@ -312,7 +312,7 @@ class Sampler:
         time_steps = self.get_time_steps()
         samples: list[SamplingDataset] = [initial_positions]
 
-        for t_idx in tqdm(range(self.num_steps)):
+        for t_idx in range(self.num_steps):
             cur_t = time_steps[t_idx]
             if t_idx == self.num_steps - 1:
                 dt = cur_t

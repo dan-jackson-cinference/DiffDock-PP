@@ -12,6 +12,7 @@ class RunCfg:
     filtering_model_path: str
     score_model_path: str
     num_samples: int
+    save_top_n_samples: int
     prediction_storage: str
     torchhub_path: str
     tensorboard_path: str
@@ -39,17 +40,18 @@ class LoggingCfg:
 #     pose_file: str
 
 
-@dataclass
-class PredCfg:
-    pdb_id: int
-    receptor_path: str
-    ligand_path: str
+# @dataclass
+# class PredCfg:
+# pdb_id: str
+# pdb_path: str
+# receptor_chains: list[str]
+# ligand_chains: list[str]
 
 
 @dataclass
 class DataCfg:
     dataset: str  # Literal["dips", "db5", "single_pair", "sabdab"]
-    data_root_dir: str
+    structures_dir: str
     data_file: str
     recache: bool
     debug: bool
@@ -59,7 +61,6 @@ class DataCfg:
     knn_size: int
     use_unbound: bool
     multiplicity: int
-    pred_cfg: PredCfg
 
 
 @dataclass

@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
-
+import copy
 
 import torch
 from Bio.PDB import PDBParser, Structure
@@ -148,18 +148,19 @@ class Protein:
         return [atom.element for atom in self.filtered_sequence]
 
     @classmethod
-    def make_protein(cls, structure: Structure.Structure) -> Protein:
+    def make_protein(cls, structure: Structure.Structure, chains: list[str]) -> Protein:
         protein = cls()
         for chain in structure.get_chains():
             chain_id = chain.id
-            for residue in chain.get_residues():
-                if residue.id[0] == " ":
-                    for atom in residue:
-                        protein.append(
-                            Atom.construct_atom(
-                                atom, chain_id, residue.id[1], residue.get_resname()
+            if chain_id in chains:
+                for residue in chain.get_residues():
+                    if residue.id[0] == " ":
+                        for atom in residue:
+                            protein.append(
+                                Atom.construct_atom(
+                                    atom, chain_id, residue.id[1], residue.get_resname()
+                                )
                             )
-                        )
 
         return protein
 
@@ -255,28 +256,30 @@ class PPComplex:
     receptor: Protein
     ligand: Protein
     split: Optional[str] = None
-    graph: HeteroData = HeteroData()
+    graph: Optional[HeteroData] = None
 
     def populate_graph(self, use_orientation_features: bool, knn_size: int) -> None:
-        self.graph["name"] = self.id
+        graph = HeteroData()
+        graph["name"] = self.id
         # retrieve position and compute kNN
         for protein, name in zip([self.receptor, self.ligand], ["receptor", "ligand"]):
-            self.graph[name].pos = protein.filtered_positions.float()
-            self.graph[name].x = [
+            graph[name].pos = protein.filtered_positions.float()
+            graph[name].x = [
                 atom.amino_acid for atom in protein.filtered_sequence
             ]  # _seq is residue id
             if use_orientation_features:
-                self.graph[name].n_i_feat = protein.n_i_feat.float()
-                self.graph[name].u_i_feat = protein.u_i_feat.float()
-                self.graph[name].v_i_feat = protein.v_i_feat.float()
+                graph[name].n_i_feat = protein.n_i_feat.float()
+                graph[name].u_i_feat = protein.u_i_feat.float()
+                graph[name].v_i_feat = protein.v_i_feat.float()
             # kNN graph
-            edge_index = knn_graph(self.graph[name].pos, knn_size)
-            self.graph[name, "contact", name].edge_index = edge_index
+            edge_index = knn_graph(graph[name].pos, knn_size)
+            graph[name, "contact", name].edge_index = edge_index
         # center receptor at origin
-        center = self.graph["receptor"].pos.mean(dim=0, keepdim=True)
+        center = graph["receptor"].pos.mean(dim=0, keepdim=True)
         for key in ["receptor", "ligand"]:
-            self.graph[key].pos = self.graph[key].pos - center
-        self.graph.center = center  # save old center
+            graph[key].pos = graph[key].pos - center
+        graph.center = center  # save old center
+        self.graph = graph
 
     def update_proteins_from_graph(self, graph: HeteroData) -> None:
         self.graph = graph
@@ -291,12 +294,18 @@ class PPComplex:
             lig_file_path = rec_file_path
         self.ligand.write_to_pdb(lig_file_path)
 
+    def __str__(self) -> str:
+        return f"{self.id}, {id(self)}"
 
-def parse_pdb(file: str, name: str) -> Protein:
+
+def parse_pdb(
+    file: str, name: str, receptor_chains: list[str], ligand_chains: list[str]
+) -> tuple[Protein, Protein]:
     pdb_parser = PDBParser()
     structure = pdb_parser.get_structure(name, file)
-
-    return Protein.make_protein(structure)
+    receptor = Protein.make_protein(structure, receptor_chains)
+    ligand = Protein.make_protein(structure, ligand_chains)
+    return receptor, ligand
 
 
 if __name__ == "__main__":

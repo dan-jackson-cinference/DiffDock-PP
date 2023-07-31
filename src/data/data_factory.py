@@ -11,7 +11,7 @@ from data.process_data import (
 )
 from data.read_data import (
     DataReader,
-    DB5Reader,
+    CSVReader,
     DIPSReader,
     SinglePairReader,
 )
@@ -41,7 +41,7 @@ class DataPipelineFactory:
         self, root_dir: str, data_cfg: DataCfg, lm_embed_dim: int
     ) -> DataPipeline:
         return DataPipeline(
-            self.data_reader_class.from_config(data_cfg),
+            self.data_reader_class.from_config(root_dir, data_cfg),
             self.data_processor_class.from_config(
                 root_dir, data_cfg, lm_embed_dim, debug=False
             ),
@@ -51,7 +51,8 @@ class DataPipelineFactory:
 FACTORIES = {
     "single_pair": DataPipelineFactory(SinglePairReader, SinglePairProcessor),
     "dips": DataPipelineFactory(DIPSReader, DIPSProcessor),
-    "db5": DataPipelineFactory(DB5Reader, DB5Processor),
+    "db5": DataPipelineFactory(CSVReader, DB5Processor),
+    "prediction": DataPipelineFactory(CSVReader, SinglePairProcessor)
     # "sabdab": DataProcessingFactory(SabDabReader, SabDabProcessor),
 }
 

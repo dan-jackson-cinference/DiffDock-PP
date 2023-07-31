@@ -1,11 +1,14 @@
 ---
 # file is parsed by inner-most keys only
 run_cfg:
+    experiment_root_dir: ${hydra:runtime.cwd}
+    cache_dir: cache
+    run_name: PPI_benchmarking
     save_path: ckpts/test
     checkpoint_path: ckpts
     filtering_model_path: checkpoints/confidence_model_dips/fold_0/
     score_model_path: checkpoints/large_model_dips/fold_0/
-    num_samples: 10
+    num_samples: 20
     prediction_storage: storage
     torchhub_path: torchhub
     tensorboard_path: tensorboard
@@ -14,9 +17,9 @@ logging_cfg:
     logger: tensorboard
     run_name: test
 data_cfg:
-    dataset: single_pair
-    data_root_dir: datasets
-    data_file: datasets/test
+    dataset: prediction
+    structures_dir: structures
+    data_file: files.csv
     recache: false
     debug: false
     resolution: backbone
@@ -25,10 +28,6 @@ data_cfg:
     use_orientation_features: false
     multiplicity: 1
     use_unbound: false
-    pred_cfg:
-        pdb_id: 1A2K
-        receptor_path: datasets/single_pair_dataset/structures/1A2K_r_b.pdb
-        ligand_path: datasets/single_pair_dataset/structures/1A2K_l_b.pdb
 processing_cfg:
     receptor_radius: 30
     c_alpha_max_neighbours: 10
