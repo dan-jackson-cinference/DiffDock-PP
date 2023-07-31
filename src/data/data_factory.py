@@ -11,7 +11,8 @@ from data.process_data import (
 )
 from data.read_data import (
     DataReader,
-    CSVReader,
+    OneToManyReader,
+    OneToOneReader,
     DIPSReader,
     SinglePairReader,
 )
@@ -51,8 +52,9 @@ class DataPipelineFactory:
 FACTORIES = {
     "single_pair": DataPipelineFactory(SinglePairReader, SinglePairProcessor),
     "dips": DataPipelineFactory(DIPSReader, DIPSProcessor),
-    "db5": DataPipelineFactory(CSVReader, DB5Processor),
-    "prediction": DataPipelineFactory(CSVReader, SinglePairProcessor)
+    "db5": DataPipelineFactory(OneToOneReader, DB5Processor),
+    "prediction": DataPipelineFactory(OneToOneReader, SinglePairProcessor),
+    "one_to_many": DataPipelineFactory(OneToManyReader, SinglePairProcessor)
     # "sabdab": DataProcessingFactory(SabDabReader, SabDabProcessor),
 }
 

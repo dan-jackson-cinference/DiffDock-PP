@@ -53,6 +53,8 @@ class DataCfg:
     dataset: str  # Literal["dips", "db5", "single_pair", "sabdab"]
     structures_dir: str
     data_file: str
+    receptor_file: str
+    receptor_chains: str
     recache: bool
     debug: bool
     resolution: str  # Literal["residue", "backbone", "atom"]

@@ -148,7 +148,7 @@ class Protein:
         return [atom.element for atom in self.filtered_sequence]
 
     @classmethod
-    def make_protein(cls, structure: Structure.Structure, chains: list[str]) -> Protein:
+    def make_protein(cls, structure: Structure.Structure, chains: str) -> Protein:
         protein = cls()
         for chain in structure.get_chains():
             chain_id = chain.id
@@ -298,7 +298,7 @@ class PPComplex:
         return f"{self.id}, {id(self)}"
 
 
-def parse_pdb(
+def parse_combined_pdb(
     file: str, name: str, receptor_chains: list[str], ligand_chains: list[str]
 ) -> tuple[Protein, Protein]:
     pdb_parser = PDBParser()
@@ -306,6 +306,13 @@ def parse_pdb(
     receptor = Protein.make_protein(structure, receptor_chains)
     ligand = Protein.make_protein(structure, ligand_chains)
     return receptor, ligand
+
+
+def parse_individual_pdb(file: str, name: str, chains: str) -> Protein:
+    pdb_parser = PDBParser()
+    structure = pdb_parser.get_structure(name, file)
+    protein = Protein.make_protein(structure, chains)
+    return protein
 
 
 if __name__ == "__main__":

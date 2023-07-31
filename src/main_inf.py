@@ -33,7 +33,7 @@ def main(cfg: DiffDockCfg):
     """test mode: load up all replicates from checkpoint directory
     and evaluate by sampling from reverse diffusion process"""
     printt("Starting Inference")
-    print(cfg.run_cfg.experiment_root_dir)
+    # print(cfg.run_cfg.experiment_root_dir)
     set_seed(cfg.training_cfg.seed)
     inf_cfg = cfg.inference_cfg
     log_cfg = cfg.logging_cfg
@@ -58,7 +58,6 @@ def main(cfg: DiffDockCfg):
     )
     printt("finished loading and processing data")
     printt("running inference")
-
     fold = 0
     # load and convert data to DataLoaders
     noise_schedule = NoiseSchedule.from_config(cfg.diffusion_cfg)
@@ -77,7 +76,7 @@ def main(cfg: DiffDockCfg):
     #     cfg.training_cfg.num_gpu,
     #     cfg.training_cfg.mode,
     # )
-    printt("finished creating data splits")
+    # printt("finished creating data splits")
 
     # get model and load checkpoint, if relevant
     score_model = load_score_model(
@@ -104,10 +103,6 @@ def main(cfg: DiffDockCfg):
         confidence_model, cfg.training_cfg.gpu, cfg.training_cfg.gpu
     )
     printt("finished loading model")
-    # MAIN RUN
-    # run reverse diffusion process
-    if inf_cfg.temp_cfg is not None:
-        print(f"temp_sampling: {inf_cfg.temp_cfg.temp_sampling}")
 
     sampler = Sampler(
         score_model,
@@ -123,12 +118,6 @@ def main(cfg: DiffDockCfg):
         printt(f"Sampling {pdb_id}")
         pdb_dir = os.path.join(cfg.run_cfg.experiment_root_dir, "pdbs", pdb_id)
         os.makedirs(pdb_dir, exist_ok=True)
-        pp_complex.receptor.write_to_pdb(
-            f"{os.path.join(pdb_dir, f'{pdb_id}_receptor.pdb')}"
-        )
-        pp_complex.ligand.write_to_pdb(
-            f"{os.path.join(pdb_dir, f'{pdb_id}_ligand.pdb')}"
-        )
         initial_positions = initialize_random_positions(
             pp_complex.graph,
             cfg.run_cfg.num_samples,

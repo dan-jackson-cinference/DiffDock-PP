@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 from config import DataCfg
-from data.protein import PPComplex, parse_pdb
+from data.protein import PPComplex, parse_combined_pdb, parse_individual_pdb
 from utils import load_csv
 
 # -------- DATA LOADING -------
@@ -173,7 +173,7 @@ class DB5Reader(DataReader):
         return PPComplex(pdb_id, receptor, ligand, split)
 
 
-class CSVReader(DataReader):
+class OneToOneReader(DataReader):
     def __init__(
         self,
         experiment_root_dir: str,
@@ -210,13 +210,80 @@ class CSVReader(DataReader):
             pdb_id = line["pdb_id"]
             # item = path_to_data.get(pdb_id)
             # if item is None:
-            receptor, ligand = parse_pdb(
+            receptor, ligand = parse_combined_pdb(
                 f"{os.path.join(self.experiment_root_dir, self.data_root_dir, pdb_id)}.pdb",
                 pdb_id,
-                line["receptor"],
-                line["ligand"],
+                line["receptor_chain"],
+                line["ligand_chain"],
             )
             pp_complex = PPComplex(pdb_id, receptor, ligand, "test")
+            # path_to_data[pdb_id] = pp_complex
+            ppi_data[pdb_id] = pp_complex
+            if self.debug:
+                if len(ppi_data) >= 2:
+                    break
+        # write to cache
+        if self.recache or not os.path.exists(self.data_cache):
+            with open(self.data_cache, "wb+") as f:
+                pickle.dump(path_to_data, f)
+        return ppi_data
+
+
+class OneToManyReader(DataReader):
+    def __init__(
+        self,
+        experiment_root_dir: str,
+        data_root_dir: str,
+        data_file: str,
+        receptor_file: str,
+        receptor_chains: str,
+        recache: bool,
+        debug: bool,
+        use_unbound: bool,
+    ):
+        super().__init__(experiment_root_dir, data_root_dir, data_file, recache, debug)
+        self.use_unbound = use_unbound
+        self.receptor_file = receptor_file
+        self.receptor_chains = receptor_chains
+
+    @classmethod
+    def from_config(cls, experiment_root_dir: str, cfg: DataCfg) -> DataReader:
+        return cls(
+            experiment_root_dir,
+            cfg.structures_dir,
+            cfg.data_file,
+            cfg.receptor_file,
+            cfg.receptor_chains,
+            cfg.recache,
+            cfg.debug,
+            cfg.use_unbound,
+        )
+
+    def read_files(self, data_to_load: list[dict[str, str]]) -> PPDataSet:
+        ppi_data: PPDataSet = {}
+        # check if loaded previously
+        if not self.recache and os.path.exists(self.data_cache):
+            with open(self.data_cache, "rb") as f:
+                path_to_data = pickle.load(f)
+        else:
+            path_to_data = {}
+
+        for line in tqdm(data_to_load, desc="data loading", ncols=50):
+            pdb_id = line["pdb_id"]
+            # item = path_to_data.get(pdb_id)
+            # if item is None:
+
+            receptor = parse_individual_pdb(
+                os.path.join(self.experiment_root_dir, self.receptor_file),
+                "receptor",
+                self.receptor_chains,
+            )
+            ligand = parse_individual_pdb(
+                f"{os.path.join(self.experiment_root_dir, self.data_root_dir, pdb_id)}.pdb",
+                pdb_id,
+                line["ligand_chains"],
+            )
+            pp_complex = PPComplex(pdb_id, receptor, ligand)
             # path_to_data[pdb_id] = pp_complex
             ppi_data[pdb_id] = pp_complex
             if self.debug:
