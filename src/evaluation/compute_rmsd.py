@@ -3,6 +3,7 @@ import math
 import numpy as np
 import scipy.spatial as spa
 from matplotlib import pyplot as plt
+from nptyping import Float, NDArray, Shape
 
 
 # Input: expects 3xN matrix of points
@@ -11,14 +12,16 @@ from matplotlib import pyplot as plt
 # R = 3x3 rotation matrix
 # t = 3x1 column vector
 # This already takes residue identity into account.
-def rigid_transform_Kabsch_3D(A, B):
+def rigid_transform_Kabsch_3D(
+    A: NDArray[Shape["2, 2"], Float], B: NDArray[Shape["2, 2"], Float]
+):
     assert A.shape[1] == B.shape[1]
     num_rows, num_cols = A.shape
     if num_rows != 3:
-        raise Exception(f"matrix A is not 3xN, it is {num_rows}x{num_cols}")
+        raise ValueError(f"matrix A is not 3xN, it is {num_rows}x{num_cols}")
     num_rows, num_cols = B.shape
     if num_rows != 3:
-        raise Exception(f"matrix B is not 3xN, it is {num_rows}x{num_cols}")
+        raise ValueError(f"matrix B is not 3xN, it is {num_rows}x{num_cols}")
 
     # find mean column wise: 3 x 1
     centroid_A = np.mean(A, axis=1, keepdims=True)
@@ -121,24 +124,6 @@ class RMSDComputer:
 
         return interface_rmsd
 
-    def summarize(self, verbose=True):
-        ligand_rmsd_summarized = (
-            get_rmsd_summary(self.ligand_rmsd_list) if self.ligand_rmsd_list else None
-        )
-        complex_rmsd_summarized = get_rmsd_summary(self.complex_rmsd_list)
-        interface_rmsd_summarized = get_rmsd_summary(self.interface_rmsd_list)
-
-        if verbose:
-            print(f"ligand_rmsd_summarized: {ligand_rmsd_summarized}")
-            print(f"complex_rmsd_summarized: {complex_rmsd_summarized}")
-            print(f"interface_rmsd_summarized: {interface_rmsd_summarized}")
-
-        return (
-            ligand_rmsd_summarized,
-            complex_rmsd_summarized,
-            interface_rmsd_summarized,
-        )
-
     def pretty_print(self, lrmsd, crmsd, irmsd):
         num_test_files = len(self.complex_rmsd_list)
         print(f"Number of samples:\t\t{num_test_files}")
@@ -162,6 +147,27 @@ class RMSDComputer:
         print(
             f"Interface lt1/lt2/lt5/lt10:\t{irmsd['lt1']:.3}%/{irmsd['lt2']:.3}%/{irmsd['lt5']:.3}%/{irmsd['lt10']:.3}%"
         )
+
+
+def summarize_rmsds(
+    complex_rmsd_list, interface_rmsd_list, ligand_rmsd_list=None, verbose=True
+):
+    ligand_rmsd_summarized = (
+        get_rmsd_summary(ligand_rmsd_list) if ligand_rmsd_list else None
+    )
+    complex_rmsd_summarized = get_rmsd_summary(complex_rmsd_list)
+    interface_rmsd_summarized = get_rmsd_summary(interface_rmsd_list)
+
+    if verbose:
+        print(f"ligand_rmsd_summarized: {ligand_rmsd_summarized}")
+        print(f"complex_rmsd_summarized: {complex_rmsd_summarized}")
+        print(f"interface_rmsd_summarized: {interface_rmsd_summarized}")
+
+    return (
+        ligand_rmsd_summarized,
+        complex_rmsd_summarized,
+        interface_rmsd_summarized,
+    )
 
 
 def evaluate_all_rmsds(data_list, samples_list):
