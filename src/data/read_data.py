@@ -213,8 +213,8 @@ class OneToOneReader(DataReader):
             receptor, ligand = parse_combined_pdb(
                 f"{os.path.join(self.experiment_root_dir, self.data_root_dir, pdb_id)}.pdb",
                 pdb_id,
-                line["receptor_chain"],
-                line["ligand_chain"],
+                line["receptor_chains"],
+                line["ligand_chains"],
             )
             pp_complex = PPComplex(pdb_id, receptor, ligand, "test")
             # path_to_data[pdb_id] = pp_complex

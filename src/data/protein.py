@@ -318,21 +318,8 @@ def parse_individual_pdb(file: str, name: str, chains: str) -> Protein:
 if __name__ == "__main__":
     pdb_parser = PDBParser()
     # lig_file = "datasets/single_pair_dataset/structures/1A2K_l_b.pdb"
-    rec_file = "datasets/single_pair_dataset/structures/1A2K_r_b.pdb"
+    rec_file = "experiments/HER2/receptor.pdb"
     # lig_structure = pdb_parser.get_structure("test", lig_file)
     rec_structure = pdb_parser.get_structure("test", rec_file)
-    # test = structure.get_atoms()
-    # for atom in test:
-    #     print(atom.serial_number)
-    #     break
-    # ligand = Protein.make_protein(lig_structure)
-    receptor = Protein.make_protein(rec_structure)
-    receptor.filter(None)
-    receptor.write_to_pdb("test_pdb.pdb")
-    print(receptor[0])
-    # ligand.filter(["CA"])
-    # receptor.filter(["CA"])
-    # binding_complex = PPComplex("1", receptor, ligand)
-    # binding_complex.populate_graph(False, 20)
-    # print(len(binding_complex.graph["receptor"].x))
-    # print(binding_complex.graph["receptor"].pos.shape)
+    receptor = Protein.make_protein(rec_structure, "B")
+    print(receptor)
