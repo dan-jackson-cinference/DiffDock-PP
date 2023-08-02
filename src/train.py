@@ -420,28 +420,3 @@ def evaluate(val_loader, model, writer, args, max_batch=None):
         scores[key] = torch.mean(value).item()
 
     return scores
-
-
-def evaluate_pose(data_list, samples_list):
-    """
-    Evaluate sampled pose vs. ground truth
-    """
-    all_rmsds = []
-    rmsds_with_name = {}
-    assert len(data_list) == len(samples_list)
-    for true_graph, pred_graph in zip(data_list, samples_list):
-        true_xyz = true_graph["ligand"].pos
-        pred_xyz = pred_graph["ligand"].pos
-        if true_xyz.shape != pred_xyz.shape:
-            print(true_graph["name"], pred_graph["name"])
-        assert true_xyz.shape == pred_xyz.shape
-        rmsd = compute_rmsd(true_xyz, pred_xyz)
-        all_rmsds.append(rmsd)
-        rmsds_with_name[true_graph["name"]] = rmsd
-
-    scores = {
-        "rmsd": all_rmsds,
-        "rmsds_with_name": rmsds_with_name,
-    }
-
-    return scores
