@@ -1,6 +1,9 @@
 from copy import deepcopy
+import copy
 from typing import Optional
+import torch
 
+from scipy.spatial.transform import Rotation as R
 from torch_geometric.data import Dataset, HeteroData
 
 from data.protein import PPComplex
@@ -152,12 +155,19 @@ class SamplingDataset(Dataset):
 
     def __init__(
         self,
-        data: list[HeteroData],
+        pp_complex: PPComplex,
+        num_samples: int,
+        tr_s_max: float,
         noise_transform: Optional[NoiseTransform] = None,
     ):
         super().__init__(transform=noise_transform)
         # select subset for given split
-        self.data = data
+        self.data = initialize_random_positions(
+            pp_complex.graph,
+            num_samples,
+            tr_s_max,
+            no_torsion=True,
+        )
 
     def len(self):
         return len(self.data)
@@ -174,3 +184,45 @@ class SamplingDataset(Dataset):
         so we can modify pos, etc.
         """
         return self.data[idx]
+
+
+def initialize_random_positions(
+    graph: HeteroData, num_trajectories: int, tr_s_max: float, no_torsion: bool = True
+) -> list[HeteroData]:
+    """
+    Modify COPY of data_list objects
+    """
+
+    if not no_torsion:
+        raise Exception("not yet implemented")
+        # randomize torsion angles
+        for i, complex_graph in enumerate(data_list):
+            torsion_updates = np.random.uniform(
+                low=-np.pi, high=np.pi, size=complex_graph["ligand"].edge_mask.sum()
+            )
+            complex_graph["ligand"].pos = modify_conformer_torsion_angles(
+                complex_graph["ligand"].pos,
+                complex_graph["ligand", "ligand"].edge_index.T[
+                    complex_graph["ligand"].edge_mask
+                ],
+                complex_graph["ligand"].mask_rotate[0],
+                torsion_updates,
+            )
+            data_list.set_graph(i, complex_graph)
+
+    graph_init_positions: list[HeteroData] = []
+    for i in range(num_trajectories):
+        graph_copy = copy.deepcopy(graph)
+
+        pos = graph_copy["ligand"].pos
+        center = torch.mean(pos, dim=0, keepdim=True)
+        random_rotation = torch.from_numpy(R.random().as_matrix())
+        pos = (pos - center) @ random_rotation.T.float()
+
+        # random translation
+        tr_update = torch.normal(0, tr_s_max, size=(1, 3))
+        pos = pos + tr_update
+        graph_copy["ligand"].pos = pos
+        graph_init_positions.append(graph_copy)
+
+    return graph_init_positions

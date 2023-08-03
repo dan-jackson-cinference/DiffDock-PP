@@ -1,8 +1,7 @@
 import math
-
+import seaborn as sns
 from torch_geometric.data import HeteroData
 import numpy as np
-from matplotlib import pyplot as plt
 from nptyping import Float, NDArray, Shape
 from scipy import spatial
 
@@ -199,23 +198,23 @@ def evaluate_all_rmsds(data_list, samples_list):
     return meter
 
 
-def evaluate_rmsds(true_graph: HeteroData, pred_graph: HeteroData):
+def evaluate_rmsds(true_graph: HeteroData, pred_graph: HeteroData) -> dict[str, float]:
     rec_xyz = true_graph["receptor"].pos
     true_xyz = true_graph["ligand"].pos
     pred_xyz = pred_graph["ligand"].pos
 
-    crmsd = compute_complex_rmsd(pred_xyz.numpy(), true_xyz.numpy(), rec_xyz.numpy())
+    # crmsd = compute_complex_rmsd(pred_xyz.numpy(), true_xyz.numpy(), rec_xyz.numpy())
     lrmsd = compute_ligand_rmsd(pred_xyz.numpy(), true_xyz.numpy())
     irmsd = compute_interface_rmsd(pred_xyz.numpy(), true_xyz.numpy(), rec_xyz.numpy())
 
-    return {"crmsd": crmsd, "lrmsd": lrmsd, "irmsd": irmsd}
+    return {"lrmsd": lrmsd, "irmsd": irmsd}
 
 
 def compute_complex_rmsd(
     ligand_coors_pred: NDArray[Shape["2, 2"], Float],
     ligand_coors_true: NDArray[Shape["2, 2"], Float],
     receptor_coors: NDArray[Shape["2, 2"], Float],
-):
+) -> float:
     complex_coors_pred = np.concatenate((ligand_coors_pred, receptor_coors), axis=0)
     complex_coors_true = np.concatenate((ligand_coors_true, receptor_coors), axis=0)
 
@@ -230,7 +229,7 @@ def compute_complex_rmsd(
 def compute_ligand_rmsd(
     ligand_coors_pred: NDArray[Shape["2, 2"], Float],
     ligand_coors_true: NDArray[Shape["2, 2"], Float],
-):
+) -> float:
     ligand_rmsd = compute_rmsd(ligand_coors_pred, ligand_coors_true)
 
     return ligand_rmsd
@@ -240,7 +239,7 @@ def compute_interface_rmsd(
     ligand_coors_pred: NDArray[Shape["2, 2"], Float],
     ligand_coors_true: NDArray[Shape["2, 2"], Float],
     receptor_coors: NDArray[Shape["2, 2"], Float],
-):
+) -> float:
     ligand_receptor_distance = spatial.distance.cdist(ligand_coors_true, receptor_coors)
     positive_tuple = np.where(ligand_receptor_distance < 8.0)
 
@@ -264,22 +263,24 @@ def compute_interface_rmsd(
 
 def compute_rmsd(
     pred: NDArray[Shape["2, 2"], Float], true: NDArray[Shape["2, 2"], Float]
-) -> NDArray[Shape["2, 2"], Float]:
+) -> float:
     return np.sqrt(np.mean(np.sum((pred - true) ** 2, axis=1)))
 
 
-def plot_rmsds(all_rmsds: dict[int, dict[str, float]], save_path: str) -> None:
-    crmsds: list[float] = []
+def collate_rmsds(all_rmsds: list[dict[str, float]]) -> dict[str, list[float]]:
     lrmsds: list[float] = []
     irmsds: list[float] = []
-    for rmsds in all_rmsds.values():
-        crmsds.append(rmsds["crmsd"])
+    for rmsds in all_rmsds:
+        # crmsds.append(rmsds["crmsd"])
         lrmsds.append(rmsds["lrmsd"])
         irmsds.append(rmsds["irmsd"])
 
-    plt.hist(crmsds, density=True, label="Complex RMSDs")
-    plt.hist(lrmsds, density=True, label="Ligand RMSDs")
-    plt.hist(irmsds, density=True, label="Interface RMSDs")
-    plt.legend()
-    plt.savefig(save_path)
-    plt.clf()
+    return {"lrmsd": lrmsds, "irmsd": irmsds}
+
+
+def plot_rmsds(data: dict[str, list[float]], save_path: str) -> None:
+    sns.set_style("ticks")
+    ax = sns.histplot(data, legend=True)
+    ax.set(xlabel="RMSD", ylabel="Number of Binders")
+    fig = ax.get_figure()
+    fig.savefig(save_path, bbox_inches="tight")

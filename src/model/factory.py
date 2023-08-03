@@ -8,6 +8,7 @@ from geom_utils.transform import NoiseSchedule
 from model.diffusion import TensorProductScoreModel
 from model.losses import DiffusionLoss
 from utils import get_model_path
+from torch import nn
 
 from .model import ConfidenceModel, ScoreModel
 
@@ -20,7 +21,6 @@ def load_score_model(
     lm_embed_dim: int,
     num_atoms: int,
     num_gpu: int,
-    fold: int,
     load_best: bool = True,
     checkpoint_path: Optional[str] = None,
 ) -> ScoreModel:
@@ -35,7 +35,7 @@ def load_score_model(
     loss = DiffusionLoss.from_config(diffusion_cfg, noise_schedule, num_gpu)
     model = ScoreModel(loss, encoder)
     # (optional) load checkpoint if provided
-    checkpoint = get_checkpoint(score_model_path, checkpoint_path, fold, load_best)
+    checkpoint = get_checkpoint(score_model_path, checkpoint_path, load_best)
     model.load_checkpoint(checkpoint)
     return model
 
@@ -46,7 +46,6 @@ def load_confidence_model(
     filtering_model_path: Optional[str],
     lm_embed_dim: int,
     num_atoms: int,
-    fold: int,
     load_best: bool = True,
     checkpoint_path: Optional[str] = None,
 ) -> ConfidenceModel:
@@ -55,7 +54,7 @@ def load_confidence_model(
         cfg, noise_schedule, lm_embed_dim, num_atoms, confidence_mode=True
     )
     model = ConfidenceModel(encoder)
-    checkpoint = get_checkpoint(filtering_model_path, checkpoint_path, fold, load_best)
+    checkpoint = get_checkpoint(filtering_model_path, checkpoint_path, load_best)
     model.load_checkpoint(checkpoint)
 
     return model
@@ -64,7 +63,6 @@ def load_confidence_model(
 def get_checkpoint(
     model_path: Optional[str],
     checkpoint_path: Optional[str],
-    fold: int,
     load_best: bool,
 ) -> Optional[str]:
     checkpoint = None
@@ -76,7 +74,7 @@ def get_checkpoint(
         else:
             checkpoint = os.path.join(model_path, "model_last.pth")
     elif checkpoint_path is not None:
-        fold_dir = os.path.join(checkpoint_path, f"fold_{fold}")
+        fold_dir = os.path.join(checkpoint_path, f"fold_0")
         if load_best:
             checkpoint = get_model_path(fold_dir)
         else:
@@ -105,7 +103,7 @@ def select_model(fold_dir, confidence_mode) -> str:
     return checkpoint
 
 
-def to_cuda(model: ScoreModel, gpu: int, num_gpu: int) -> ScoreModel:
+def to_cuda(model: nn.Module, gpu: int, num_gpu: int) -> nn.Module:
     """
     move model to cuda
     """

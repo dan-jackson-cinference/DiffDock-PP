@@ -2,13 +2,11 @@
     Inference script
 """
 
-import copy
 import os
 from typing import Optional
 from tqdm import tqdm
 import numpy as np
 import torch
-from scipy.spatial.transform import Rotation as R
 from torch import Tensor, device
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataListLoader, DataLoader
@@ -242,48 +240,6 @@ def get_timesteps(inference_steps: int):
     return np.linspace(1, 0, inference_steps + 1)[:-1]
 
 
-def initialize_random_positions(
-    graph: HeteroData, num_trajectories: int, tr_s_max: float, no_torsion: bool = True
-) -> list[HeteroData]:
-    """
-    Modify COPY of data_list objects
-    """
-
-    if not no_torsion:
-        raise Exception("not yet implemented")
-        # randomize torsion angles
-        for i, complex_graph in enumerate(data_list):
-            torsion_updates = np.random.uniform(
-                low=-np.pi, high=np.pi, size=complex_graph["ligand"].edge_mask.sum()
-            )
-            complex_graph["ligand"].pos = modify_conformer_torsion_angles(
-                complex_graph["ligand"].pos,
-                complex_graph["ligand", "ligand"].edge_index.T[
-                    complex_graph["ligand"].edge_mask
-                ],
-                complex_graph["ligand"].mask_rotate[0],
-                torsion_updates,
-            )
-            data_list.set_graph(i, complex_graph)
-
-    graph_init_positions: list[HeteroData] = []
-    for i in range(num_trajectories):
-        graph_copy = copy.deepcopy(graph)
-
-        pos = graph_copy["ligand"].pos
-        center = torch.mean(pos, dim=0, keepdim=True)
-        random_rotation = torch.from_numpy(R.random().as_matrix())
-        pos = (pos - center) @ random_rotation.T.float()
-
-        # random translation
-        tr_update = torch.normal(0, tr_s_max, size=(1, 3))
-        pos = pos + tr_update
-        graph_copy["ligand"].pos = pos
-        graph_init_positions.append(graph_copy)
-
-    return graph_init_positions
-
-
 class Sampler:
     def __init__(
         self,
@@ -293,25 +249,25 @@ class Sampler:
         batch_size: int,
         no_final_noise: bool,
         no_random: bool,
+        ode: bool,
         device: device,
+        temp_cfg: Optional[TempCfg] = None,
     ):
-        self.score_model = score_model
+        self.score_model = score_model.eval()
         self.noise_transform = noise_transform
         self.num_steps = num_steps
         self.batch_size = batch_size
         self.no_final_noise = no_final_noise
         self.no_random = no_random
+        self.ode = ode
+        self.temp_cfg = temp_cfg
         self.device = device
 
     def sample(
         self,
-        initial_positions: SamplingDataset,
-        ode: bool,
-        temp_cfg: Optional[TempCfg] = None,
-    ) -> list[SamplingDataset]:
+        dataset: SamplingDataset,
+    ) -> list[HeteroData]:
         time_steps = self.get_time_steps()
-
-        samples: list[SamplingDataset] = [initial_positions]
 
         for t_idx in range(self.num_steps):
             cur_t = time_steps[t_idx]
@@ -320,11 +276,8 @@ class Sampler:
             else:
                 dt = cur_t - time_steps[t_idx + 1]
 
-            new_samples = self.sample_step(cur_t, dt, t_idx, samples[-1], ode, temp_cfg)
-            # print(new_samples)
-            samples.append(SamplingDataset(new_samples))
-
-        return samples
+            dataset.data = self.sample_step(cur_t, dt, t_idx, dataset)
+        return dataset.data
 
     def sample_step(
         self,
@@ -332,8 +285,6 @@ class Sampler:
         dt: float,
         idx: int,
         graphs: SamplingDataset,
-        ode: bool,
-        temp_cfg: Optional[TempCfg],
     ) -> list[HeteroData]:
         for graph in graphs:
             set_time(graph, t, t, t, 1, self.device)
@@ -356,11 +307,11 @@ class Sampler:
             rot_g = 2 * rot_s * self.noise_transform.noise_schedule.rot_scale
 
             tr_z, rot_z = self.trz_rotz(idx)
-            if ode:
+            if self.ode:
                 tr_update, rot_update = self.ode_update(
                     dt, tr_g, rot_g, tr_score, rot_score
                 )
-            elif temp_cfg is not None:
+            elif self.temp_cfg is not None:
                 tr_update, rot_update = self.sample_temp(
                     dt,
                     tr_s,
@@ -371,10 +322,10 @@ class Sampler:
                     rot_g,
                     rot_z,
                     rot_score,
-                    temp_cfg.temp_sampling,
-                    temp_cfg.temp_psi,
-                    temp_cfg.temp_sigma_data_tr,
-                    temp_cfg.temp_sigma_data_rot,
+                    self.temp_cfg.temp_sampling,
+                    self.temp_cfg.temp_psi,
+                    self.temp_cfg.temp_sigma_data_tr,
+                    self.temp_cfg.temp_sigma_data_rot,
                 )
             else:
                 tr_update, rot_update = self.update(

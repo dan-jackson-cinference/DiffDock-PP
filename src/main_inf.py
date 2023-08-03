@@ -1,3 +1,4 @@
+import copy
 import resource
 import time
 
@@ -11,16 +12,15 @@ from confidence import evaluate_confidence
 from data.data_factory import load_data
 from data.load_data import get_datasets, get_loaders, split_data
 from data.dataset import BindingDataset, SamplingDataset
-from evaluate import evaluate_all_predictions
 
 from geom_utils.transform import NoiseSchedule, NoiseTransform
 from model.factory import load_confidence_model, load_score_model, to_cuda
 
 # from helpers import WandbLogger, TensorboardLogger
-from sample import Sampler, initialize_random_positions
+from sample import Sampler
 from seed import set_seed
 from config import DiffDockCfg
-from rmsds import evaluate_rmsds, plot_rmsds
+from rmsds import evaluate_rmsds, plot_rmsds, collate_rmsds
 from utils import printt
 
 cs = ConfigStore.instance()
@@ -57,7 +57,6 @@ def main(cfg: DiffDockCfg):
     )
     printt("finished loading and processing data")
     printt("running inference")
-    fold = 0
     # load and convert data to DataLoaders
     noise_schedule = NoiseSchedule.from_config(cfg.diffusion_cfg)
     noise_transform = NoiseTransform(noise_schedule)
@@ -85,8 +84,7 @@ def main(cfg: DiffDockCfg):
         cfg.run_cfg.score_model_path,
         cfg.model_cfg.lm_embed_dim,
         num_atoms=23,
-        num_gpu=0,
-        fold=fold,
+        num_gpu=1,
     )
     score_model = to_cuda(score_model, cfg.training_cfg.gpu, cfg.training_cfg.gpu)
 
@@ -96,13 +94,12 @@ def main(cfg: DiffDockCfg):
         cfg.run_cfg.filtering_model_path,
         cfg.model_cfg.lm_embed_dim,
         num_atoms=23,
-        fold=fold,
     )
     confidence_model = to_cuda(
         confidence_model, cfg.training_cfg.gpu, cfg.training_cfg.gpu
     )
     printt("finished loading model")
-
+    score_model.eval()
     sampler = Sampler(
         score_model,
         noise_transform,
@@ -110,42 +107,43 @@ def main(cfg: DiffDockCfg):
         batch_size=5,
         no_final_noise=inf_cfg.no_final_noise,
         no_random=inf_cfg.no_random,
+        ode=inf_cfg.ode,
         device=device,
+        temp_cfg=inf_cfg.temp_cfg,
     )
 
     for pdb_id, pp_complex in processed_data.items():
+        ground_truth = copy.deepcopy(pp_complex)
         printt(f"Sampling {pdb_id}")
         pdb_dir = os.path.join(cfg.run_cfg.experiment_root_dir, "pdbs", pdb_id)
         os.makedirs(pdb_dir, exist_ok=True)
-        initial_positions = initialize_random_positions(
-            pp_complex.graph,
-            cfg.run_cfg.num_samples,
-            cfg.diffusion_cfg.tr_s_max,
-            no_torsion=True,
+
+        sampling_dataset = SamplingDataset(
+            pp_complex, cfg.run_cfg.num_samples, cfg.diffusion_cfg.tr_s_max
         )
-        sampling_dataset = SamplingDataset(initial_positions)
-        samples = sampler.sample(sampling_dataset, inf_cfg.ode, inf_cfg.temp_cfg)
-        final_samples = [sample for sample in samples[-1]]
+        final_samples = sampler.sample(sampling_dataset)
+
         # samples_loader = DataLoader(final_samples, batch_size=cfg.run_cfg.num_samples)
         # confidence = evaluate_confidence(confidence_model, samples_loader, device)
         # results = sorted(list(zip(final_samples, confidence)), key=lambda x: -x[1])
 
-        rmsds = {}
+        all_rmsds: list[dict[str, float]] = []
         for i, sample in enumerate(final_samples):
-            rmsds[i] = evaluate_rmsds(pp_complex.graph, sample)
-
-        printt("Finished Complex!")
-
-        plot_rmsds(rmsds, os.path.join(pdb_dir, "RMSDs_histogram.png"))
-
-        for i, sample in enumerate(final_samples):
+            rmsds = evaluate_rmsds(ground_truth.graph, sample)
             pp_complex.update_proteins_from_graph(sample)
             pp_complex.write_to_pdb(
                 os.path.join(
                     pdb_dir,
-                    f"{pdb_id}_sample_{i}_crmsd_{rmsds[i]['crmsd']:.3f}_lrmsd_{rmsds[i]['lrmsd']:.3f}_irmsd_{rmsds[i]['irmsd']:.3f}.pdb",
+                    f"{pdb_id}_sample_{i}_lrmsd_{rmsds['lrmsd']:.3f}_irmsd_{rmsds['irmsd']:.3f}.pdb",
                 )
             )
+            all_rmsds.append(rmsds)
+
+        plot_rmsds(
+            collate_rmsds(all_rmsds),
+            os.path.join(pdb_dir, f"{pdb_id}_RMSDs_histogram.png"),
+        )
+        printt("Finished Complex!")
 
     printt(f"Finished run {log_cfg.run_name}")
     print(f"Total time spent: {time.time()-start_time}")

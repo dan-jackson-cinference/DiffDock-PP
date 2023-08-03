@@ -264,13 +264,17 @@ class PPComplex:
         # retrieve position and compute kNN
         for protein, name in zip([self.receptor, self.ligand], ["receptor", "ligand"]):
             graph[name].pos = protein.filtered_positions.float()
-            graph[name].x = [
-                atom.amino_acid for atom in protein.filtered_sequence
-            ]  # _seq is residue id
+            graph[name].x = [atom.amino_acid for atom in protein.filtered_sequence]
             if use_orientation_features:
-                graph[name].n_i_feat = protein.n_i_feat.float()
-                graph[name].u_i_feat = protein.u_i_feat.float()
-                graph[name].v_i_feat = protein.v_i_feat.float()
+                graph[name].n_i_feat = (
+                    protein.n_i_feat.float() if protein.n_i_feat is not None else None
+                )
+                graph[name].u_i_feat = (
+                    protein.u_i_feat.float() if protein.u_i_feat is not None else None
+                )
+                graph[name].v_i_feat = (
+                    protein.v_i_feat.float() if protein.v_i_feat is not None else None
+                )
             # kNN graph
             edge_index = knn_graph(graph[name].pos, knn_size)
             graph[name, "contact", name].edge_index = edge_index
@@ -293,9 +297,6 @@ class PPComplex:
         if lig_file_path is None:
             lig_file_path = rec_file_path
         self.ligand.write_to_pdb(lig_file_path)
-
-    def __str__(self) -> str:
-        return f"{self.id}, {id(self)}"
 
 
 def parse_combined_pdb(
