@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from data import BindingDataset
-from evaluation.compute_rmsd import evaluate_all_rmsds
+from rmsds import evaluate_all_rmsds
 from sample import sample
 from utils import compute_rmsd, get_optimizer, log, print_res, printt
 

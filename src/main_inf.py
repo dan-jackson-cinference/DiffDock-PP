@@ -4,7 +4,6 @@ import time
 import hydra
 import os
 import torch
-
 from hydra.core.config_store import ConfigStore
 from torch_geometric.loader import DataLoader
 
@@ -21,7 +20,7 @@ from model.factory import load_confidence_model, load_score_model, to_cuda
 from sample import Sampler, initialize_random_positions
 from seed import set_seed
 from config import DiffDockCfg
-
+from rmsds import evaluate_rmsds, plot_rmsds
 from utils import printt
 
 cs = ConfigStore.instance()
@@ -124,25 +123,27 @@ def main(cfg: DiffDockCfg):
             cfg.diffusion_cfg.tr_s_max,
             no_torsion=True,
         )
-
         sampling_dataset = SamplingDataset(initial_positions)
         samples = sampler.sample(sampling_dataset, inf_cfg.ode, inf_cfg.temp_cfg)
-        samples_loader = DataLoader(samples[-1], batch_size=cfg.run_cfg.num_samples)
-        confidence = evaluate_confidence(
-            confidence_model, samples_loader, device
-        )  # TODO -> maybe list inside
+        final_samples = [sample for sample in samples[-1]]
+        # samples_loader = DataLoader(final_samples, batch_size=cfg.run_cfg.num_samples)
+        # confidence = evaluate_confidence(confidence_model, samples_loader, device)
+        # results = sorted(list(zip(final_samples, confidence)), key=lambda x: -x[1])
 
-        samples_list = [sample for sample in samples[-1]]
-        results = sorted(list(zip(samples_list, confidence)), key=lambda x: -x[1])
+        rmsds = {}
+        for i, sample in enumerate(final_samples):
+            rmsds[i] = evaluate_rmsds(pp_complex.graph, sample)
+
         printt("Finished Complex!")
 
-        for i, (sample, confidence_val) in enumerate(
-            results[: cfg.run_cfg.save_top_n_samples]
-        ):
+        plot_rmsds(rmsds, os.path.join(pdb_dir, "RMSDs_histogram.png"))
+
+        for i, sample in enumerate(final_samples):
             pp_complex.update_proteins_from_graph(sample)
             pp_complex.write_to_pdb(
                 os.path.join(
-                    pdb_dir, f"{pdb_id}_sample_{i}_confidence_{confidence_val:.3f}.pdb"
+                    pdb_dir,
+                    f"{pdb_id}_sample_{i}_crmsd_{rmsds[i]['crmsd']:.3f}_lrmsd_{rmsds[i]['lrmsd']:.3f}_irmsd_{rmsds[i]['irmsd']:.3f}.pdb",
                 )
             )
 

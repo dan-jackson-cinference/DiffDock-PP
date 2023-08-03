@@ -310,6 +310,7 @@ class Sampler:
         temp_cfg: Optional[TempCfg] = None,
     ) -> list[SamplingDataset]:
         time_steps = self.get_time_steps()
+
         samples: list[SamplingDataset] = [initial_positions]
 
         for t_idx in range(self.num_steps):
@@ -330,16 +331,13 @@ class Sampler:
         t: float,
         dt: float,
         idx: int,
-        graph_dataset: SamplingDataset,
+        graphs: SamplingDataset,
         ode: bool,
         temp_cfg: Optional[TempCfg],
     ) -> list[HeteroData]:
-        for graph in graph_dataset:
+        for graph in graphs:
             set_time(graph, t, t, t, 1, self.device)
-
-        dataloader = DataLoader(
-            graph_dataset, batch_size=self.batch_size, shuffle=False
-        )
+        dataloader = DataLoader(graphs, batch_size=self.batch_size, shuffle=False)
 
         all_new_graphs: list[HeteroData] = []
         for batch_of_graphs in dataloader:

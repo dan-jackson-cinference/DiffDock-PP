@@ -1,9 +1,10 @@
 import math
 
+from torch_geometric.data import HeteroData
 import numpy as np
-import scipy.spatial as spa
 from matplotlib import pyplot as plt
 from nptyping import Float, NDArray, Shape
+from scipy import spatial
 
 
 # Input: expects 3xN matrix of points
@@ -196,3 +197,89 @@ def evaluate_all_rmsds(data_list, samples_list):
         )
 
     return meter
+
+
+def evaluate_rmsds(true_graph: HeteroData, pred_graph: HeteroData):
+    rec_xyz = true_graph["receptor"].pos
+    true_xyz = true_graph["ligand"].pos
+    pred_xyz = pred_graph["ligand"].pos
+
+    crmsd = compute_complex_rmsd(pred_xyz.numpy(), true_xyz.numpy(), rec_xyz.numpy())
+    lrmsd = compute_ligand_rmsd(pred_xyz.numpy(), true_xyz.numpy())
+    irmsd = compute_interface_rmsd(pred_xyz.numpy(), true_xyz.numpy(), rec_xyz.numpy())
+
+    return {"crmsd": crmsd, "lrmsd": lrmsd, "irmsd": irmsd}
+
+
+def compute_complex_rmsd(
+    ligand_coors_pred: NDArray[Shape["2, 2"], Float],
+    ligand_coors_true: NDArray[Shape["2, 2"], Float],
+    receptor_coors: NDArray[Shape["2, 2"], Float],
+):
+    complex_coors_pred = np.concatenate((ligand_coors_pred, receptor_coors), axis=0)
+    complex_coors_true = np.concatenate((ligand_coors_true, receptor_coors), axis=0)
+
+    R, t = rigid_transform_Kabsch_3D(complex_coors_pred.T, complex_coors_true.T)
+    complex_coors_pred_aligned = (R @ complex_coors_pred.T + t).T
+
+    complex_rmsd = compute_rmsd(complex_coors_pred_aligned, complex_coors_true)
+
+    return complex_rmsd
+
+
+def compute_ligand_rmsd(
+    ligand_coors_pred: NDArray[Shape["2, 2"], Float],
+    ligand_coors_true: NDArray[Shape["2, 2"], Float],
+):
+    ligand_rmsd = compute_rmsd(ligand_coors_pred, ligand_coors_true)
+
+    return ligand_rmsd
+
+
+def compute_interface_rmsd(
+    ligand_coors_pred: NDArray[Shape["2, 2"], Float],
+    ligand_coors_true: NDArray[Shape["2, 2"], Float],
+    receptor_coors: NDArray[Shape["2, 2"], Float],
+):
+    ligand_receptor_distance = spatial.distance.cdist(ligand_coors_true, receptor_coors)
+    positive_tuple = np.where(ligand_receptor_distance < 8.0)
+
+    active_ligand = positive_tuple[0]
+    active_receptor = positive_tuple[1]
+
+    ligand_coors_pred = ligand_coors_pred[active_ligand, :]
+    ligand_coors_true = ligand_coors_true[active_ligand, :]
+    receptor_coors = receptor_coors[active_receptor, :]
+
+    complex_coors_pred = np.concatenate((ligand_coors_pred, receptor_coors), axis=0)
+    complex_coors_true = np.concatenate((ligand_coors_true, receptor_coors), axis=0)
+
+    R, t = rigid_transform_Kabsch_3D(complex_coors_pred.T, complex_coors_true.T)
+    complex_coors_pred_aligned = (R @ complex_coors_pred.T + t).T
+
+    interface_rmsd = compute_rmsd(complex_coors_pred_aligned, complex_coors_true)
+
+    return interface_rmsd
+
+
+def compute_rmsd(
+    pred: NDArray[Shape["2, 2"], Float], true: NDArray[Shape["2, 2"], Float]
+) -> NDArray[Shape["2, 2"], Float]:
+    return np.sqrt(np.mean(np.sum((pred - true) ** 2, axis=1)))
+
+
+def plot_rmsds(all_rmsds: dict[int, dict[str, float]], save_path: str) -> None:
+    crmsds: list[float] = []
+    lrmsds: list[float] = []
+    irmsds: list[float] = []
+    for rmsds in all_rmsds.values():
+        crmsds.append(rmsds["crmsd"])
+        lrmsds.append(rmsds["lrmsd"])
+        irmsds.append(rmsds["irmsd"])
+
+    plt.hist(crmsds, density=True, label="Complex RMSDs")
+    plt.hist(lrmsds, density=True, label="Ligand RMSDs")
+    plt.hist(irmsds, density=True, label="Interface RMSDs")
+    plt.legend()
+    plt.savefig(save_path)
+    plt.clf()
